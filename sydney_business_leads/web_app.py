@@ -7,11 +7,13 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 from local_leads import HERE, OUTPUT, CATEGORIES, STATES, collect, csv_bytes, save_run, validate, CollectionError
+from postcode_automation import Automation
 
 TOKEN=secrets.token_urlsafe(24)
 LOCK=threading.Lock()
 JOB={'state':'idle','message':'准备就绪','rows':[],'metadata':{},'file':''}
 CANCEL=threading.Event()
+AUTO=Automation()
 
 
 def reviewed():
@@ -70,6 +72,14 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/status':
             with LOCK:
                 return self.reply(200,JOB)
+        if path=='/api/automation':
+            return self.reply(200,AUTO.snapshot())
+        if path.startswith('/download/automation/'):
+            name=path.removeprefix('/download/automation/')
+            try:
+                return self.reply(200,AUTO.download(name),'text/csv; charset=utf-8',name)
+            except (ValueError,OSError):
+                return self.reply(404,{'error':'没有此任务文件'})
         if path=='/download/reviewed.csv':
             return self.reply(200,csv_bytes(reviewed()),'text/csv; charset=utf-8','Burwood_20_businesses.csv')
         if path=='/download/reviewed.xlsx':
@@ -85,6 +95,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host() or self.headers.get('X-Local-Token')!=TOKEN:
             return self.reply(403,{'error':'请从本机页面操作。'})
+        if self.path.startswith('/api/automation/'):
+            try:
+                action=self.path.rsplit('/',1)[-1]
+                with LOCK:
+                    if JOB['state']=='running': raise ValueError('请先等待单次查询结束')
+                    if action=='start':
+                        length=int(self.headers.get('Content-Length','0'))
+                        if not 1<=length<=4096: raise ValueError('请求大小不正确')
+                        AUTO.start(json.loads(self.rfile.read(length)))
+                    elif action=='pause': AUTO.pause()
+                    elif action=='resume': AUTO.resume()
+                    elif action=='finish': AUTO.finish()
+                    elif action=='skip': AUTO.skip()
+                    else: return self.reply(404,{'error':'Not found'})
+                return self.reply(202,{'ok':True})
+            except (ValueError,TypeError,CollectionError) as e:
+                return self.reply(400,{'error':str(e)})
         if self.path=='/api/cancel':
             CANCEL.set(); return self.reply(200,{'ok':True})
         if self.path!='/api/collect': return self.reply(404,{'error':'Not found'})
@@ -103,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError,TypeError,CollectionError) as e:
             return self.reply(400,{'error':str(e)})
         with LOCK:
-            if JOB['state']=='running': return self.reply(409,{'error':'已有查询正在进行'})
+            if JOB['state']=='running' or AUTO.running(): return self.reply(409,{'error':'已有查询正在进行'})
             CANCEL.clear(); JOB.update(state='running',message='开始搜索',rows=[],metadata={},file='')
         threading.Thread(target=worker,args=(options,),daemon=True).start()
         self.reply(202,{'ok':True})
