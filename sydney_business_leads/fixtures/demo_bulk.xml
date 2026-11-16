@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC DEMO FIXTURE ONLY: These names and numbers are not real leads. -->
+<Transfer>
+  <ABR recordLastUpdatedDate="20261110" replaced="N">
+    <ABN status="ACT" ABNStatusFromDate="20250115">11111111111</ABN>
+    <EntityType><EntityTypeInd>PRV</EntityTypeInd><EntityTypeText>Australian Private Company</EntityTypeText></EntityType>
+    <MainEntity>
+      <NonIndividualName type="MN"><NonIndividualNameText>DEMO HARBOUR SERVICES PTY LTD</NonIndividualNameText></NonIndividualName>
+      <BusinessAddress><AddressDetails><State>NSW</State><Postcode>2000</Postcode></AddressDetails></BusinessAddress>
+    </MainEntity>
+    <ASICNumber ASICNumberType="ACN">111111111</ASICNumber>
+    <GST status="ACT" GSTStatusFromDate="20250115" />
+    <OtherEntity><NonIndividualName type="BN"><NonIndividualNameText>DEMO Harbour Repairs</NonIndividualNameText></NonIndividualName></OtherEntity>
+    <OtherEntity><NonIndividualName type="BN"><NonIndividualNameText>DEMO Harbour Studio</NonIndividualNameText></NonIndividualName></OtherEntity>
+    <OtherEntity><NonIndividualName type="BN"><NonIndividualNameText>DEMO Harbour Repairs</NonIndividualNameText></NonIndividualName></OtherEntity>
+    <OtherEntity><NonIndividualName type="TRD"><NonIndividualNameText>DEMO Old Harbour Trading</NonIndividualNameText></NonIndividualName></OtherEntity>
+    <OtherEntity><NonIndividualName type="OTN"><NonIndividualNameText>DEMO Legacy Workshop</NonIndividualNameText></NonIndividualName></OtherEntity>
+  </ABR>
+  <ABR recordLastUpdatedDate="20261111" replaced="N">
+    <ABN status="ACT" ABNStatusFromDate="20250801">22222222222</ABN>
+    <EntityType><EntityTypeInd>IND</EntityTypeInd><EntityTypeText>Individual/Sole Trader</EntityTypeText></EntityType>
+    <LegalEntity>
+      <IndividualName type="LGL"><NameTitle>Mx</NameTitle><GivenName>DEMO</GivenName><GivenName>Alex</GivenName><FamilyName>EXAMPLE</FamilyName></IndividualName>
+      <BusinessAddress><AddressDetails><State>NSW</State><Postcode>2150</Postcode></AddressDetails></BusinessAddress>
+    </LegalEntity>
+    <GST status="NON" GSTStatusFromDate="19000101" />
+    <OtherEntity><NonIndividualName type="BN"><NonIndividualNameText>DEMO Parramatta Design</NonIndividualNameText></NonIndividualName></OtherEntity>
+  </ABR>
+  <ABR recordLastUpdatedDate="20261020" replaced="N">
+    <ABN status="CAN" ABNStatusFromDate="20261019">33333333333</ABN>
+    <EntityType><EntityTypeInd>PRV</EntityTypeInd><EntityTypeText>Australian Private Company</EntityTypeText></EntityType>
+    <MainEntity>
+      <NonIndividualName type="MN"><NonIndividualNameText>DEMO CLOSED COMPANY PTY LTD</NonIndividualNameText></NonIndividualName>
+      <BusinessAddress><AddressDetails><State>NSW</State><Postcode>2000</Postcode></AddressDetails></BusinessAddress>
+    </MainEntity>
+    <GST status="CAN" GSTStatusFromDate="20261019" />
+  </ABR>
+  <ABR recordLastUpdatedDate="20261112" replaced="N">
+    <ABN status="ACT" ABNStatusFromDate="20240301">44444444444</ABN>
+    <EntityType><EntityTypeInd>PUB</EntityTypeInd><EntityTypeText>Australian Public Company</EntityTypeText></EntityType>
+    <MainEntity>
+      <NonIndividualName type="MN"><NonIndividualNameText>DEMO MELBOURNE PUBLIC LIMITED</NonIndividualNameText></NonIndividualName>
+      <BusinessAddress><AddressDetails><State>VIC</State><Postcode>3000</Postcode></AddressDetails></BusinessAddress>
+    </MainEntity>
+  </ABR>
+  <ABR recordLastUpdatedDate="20261112" replaced="N">
+    <ABN status="ACT" ABNStatusFromDate="20260701">55555555555</ABN>
+    <EntityType><EntityTypeInd>PRV</EntityTypeInd><EntityTypeText>Australian Private Company</EntityTypeText></EntityType>
+    <MainEntity>
+      <NonIndividualName type="MN"><NonIndividualNameText>DEMO CHATSWOOD SERVICES PTY LTD</NonIndividualNameText></NonIndividualName>
+      <BusinessAddress><AddressDetails><State>NSW</State><Postcode>2067</Postcode></AddressDetails></BusinessAddress>
+    </MainEntity>
+    <OtherEntity><NonIndividualName type="BN"><NonIndividualNameText>DEMO Chatswood Workshop</NonIndividualNameText></NonIndividualName></OtherEntity>
+  </ABR>
+</Transfer>

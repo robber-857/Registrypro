@@ -1,0 +1,9 @@
+suburb,state,postcode,source_url,verified_on
+Sydney,NSW,2000,https://auspost.com.au/postcode/sydney-2000,2026-11-16
+Haymarket,NSW,2000,https://auspost.com.au/postcode/2000,2026-11-16
+Chatswood,NSW,2067,https://auspost.com.au/postcode/chatswood-2067,2026-11-16
+Chatswood West,NSW,2067,https://auspost.com.au/postcode/chatswood-west,2026-11-16
+Burwood,NSW,2134,https://auspost.com.au/postcode/burwood,2026-11-16
+Burwood North,NSW,2134,https://auspost.com.au/postcode/2134,2026-11-16
+Parramatta,NSW,2150,https://auspost.com.au/postcode/parramatta-2150,2026-11-16
+Harris Park,NSW,2150,https://electorate.aec.gov.au/LocalitySearchResults.aspx?filter=2150&filterby=Postcode,2026-11-16

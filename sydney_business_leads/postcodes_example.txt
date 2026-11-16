@@ -1,0 +1,6 @@
+# Four delivery postcodes for an initial Sydney lead search.
+# This is NOT a complete Greater Sydney / LGA boundary definition.
+2000
+2067
+2134
+2150

@@ -1,0 +1,49 @@
+{
+  "script_version": "1.0.0",
+  "mode": "demo",
+  "started_at": "2026-11-16T12:52:04+00:00",
+  "state": "NSW",
+  "postcodes": [
+    "2000",
+    "2067",
+    "2134",
+    "2150"
+  ],
+  "requested_suburbs": {},
+  "entity_types": [
+    "PRV",
+    "PUB"
+  ],
+  "name_contains_any": [],
+  "limit_entities": 0,
+  "status": "finished",
+  "sample_data": true,
+  "location_precision": "state_and_postcode_only; suburb_and_LGA_membership_not_verified",
+  "coverage": "active_ABN_holders_with_visible_matching_fields; not_an_ASIC_company_census",
+  "snapshot_completeness_verified": false,
+  "postcode_requests": [],
+  "all_returned_api_abns_processed": false,
+  "api_cache_policy": null,
+  "notes": [
+    "No street address, website, phone, or industry is supplied by this source.",
+    "Search URLs are research shortcuts, not confirmed websites or matched premises.",
+    "ABN Active does not prove the business is currently trading or a shop is open.",
+    "abn_status_from is the start of the current ABN status, not company incorporation.",
+    "One entity can produce multiple registered business name rows.",
+    "All supplied XMLs are scanned unless limited; official distribution parts and snapshot consistency must be checked by the operator."
+  ],
+  "input_paths": [
+    "/workspace/scratch/cd797d33fc6a/sydney_business_leads/fixtures/demo_bulk.xml"
+  ],
+  "stopped_at_limit": false,
+  "counts": {
+    "records_read": 5,
+    "entity_type_filtered": 1,
+    "inactive_or_unknown_status": 1,
+    "outside_or_missing_location": 1
+  },
+  "entities_exported": 2,
+  "output_file": "/workspace/scratch/cd797d33fc6a/sydney_business_leads/examples/demo_companies.csv",
+  "name_rows": 3,
+  "finished_at": "2026-11-16T12:52:04+00:00"
+}
