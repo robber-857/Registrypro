@@ -5,13 +5,19 @@
 - 已实施名称规范化和候选排序、无官网搜索、单 ABN 首选名称队列、公司日期可选、状态／预期编号过滤、最多 10 页、摘要缓存、队列持久化、暂停同步、候选日期分列、确认主体 CSV 去重及关联门店来源。
 - Google Maps 接口使用真实 Places Text Search (New)，单次和连续任务均接入；本机未配置密钥，因此真实 Google 调用未执行。缺少配置时明确失败，不回退 Bing。接口请求体、分页及来源映射用合成响应验证。
 - 本机浏览器已实际选择 Google Maps 并点击开始：显示缺少 GOOGLE_PLACES_API_KEY，原 20 家名单保留，未回退 Bing。服务已重启加载第二版。
-- 94 项 Python 测试、8 项 JS 内容脚本测试通过。新增覆盖空格／词序／后缀、中心与租户隔离、个人同名不选择无关品牌、单 ABN 一名称、强制刷新、暂停恢复、Google 配置错误、连续邮编等待 ASIC、已确认主体去重及门店来源保留。
+- 94 项 Python 测试、10 项 JS 内容脚本测试通过。新增覆盖空格／词序／后缀、中心与租户隔离、个人同名不选择无关品牌、单 ABN 一名称、强制刷新、暂停恢复、Google 配置错误、连续邮编等待 ASIC、已确认主体去重及门店来源保留。
 - RapidOCR 已装于本机 output/ocr_runtime。实际识别虚构英文摘要：名称 SYNTHETIC CAFE、ABN 99 115 089 033、Registered、Renewal date 12/10/2029 均正确，最低逐行置信度 0.986。PNG 与识别结果保存在 output/v2_trial/。此项是实际 OCR 引擎测试，不是生产 ASIC 截图端到端验收。
 - 原始 NSW 2135 含邻区 20 家全部重新执行 ABN 研究，用时 92.87 秒，中位数 3.535 秒，P90 7.91 秒。原始名单从运行服务保存到 output/v2_baseline_status.json，未换成 Burwood 初始名单。
 - 新版准备阶段生成 20 项 ASIC 首选查询；旧版 36 项，减少 16 项（44.4%）。没有把队列减少比例当成耗时改善比例。
 - 原有 3 家确认保留。CUA 真实补查 HAIRLOVE STRATHFIELD：Registered，续期日 2028-03-01，ABN 30691136003；Principal place of business 仅 Strathfield NSW 2135，故只保存候选，未拿送达地址冒充营业地点。
 - 直接跳转 ASIC bySearchId 链接时观察到 URL 已变但仍显示前一摘要；名称与编号交叉校验必须保留，不能只看 URL 判断成功。插件已保留错页拒绝与回到名称搜索的逻辑。
-- **新版 20 家 ASIC 插件整批实跑尚未完成。** Chrome 原生窗口均处最小化状态，CUA 选择目标窗口报 minimized，无法点击工具栏弹窗重载新版并配对。已请求用户恢复 ASIC Chrome 窗口；没有绕过 chrome://extensions 限制。不得把本轮 ABN 研究或 CUA 单页核实写成插件批量成功。
+- **原始 20 家 ASIC 插件队列已完成 20/20，缓存命中 0。** 批次 `23bd5f41e72ebd5f4a092f06`，记录总耗时 737 秒；单项中位数 12.685 秒，P90 68.71 秒。这是有人工恢复的验收：包含空白页刷新、搜索校验修复、插件重载和检查点继续，不能作为无人值守测速。此前诊断批次不计入最终结果。
+- 本批 4 项确认并保存续期日、7 项只保存候选摘要、9 项无有效匹配／校验拒绝／超时。最终名单共 5 家确认主体、4 个确认续期日、7 个候选续期日。旧有 Young Accountants 身份及公司日期保留；本轮默认未查询公司审核日。
+- 新增确认 R&A Accountants：ABN 43380954731，Business Name `R & A ACCOUNTANTS`，续期 2028-07-04，营业地址 47 Russell St Greenacre NSW 2190；LAB Strathfield：ABN 90620174218，Business Name `LAB BAKERY CAFE`，续期 2029-07-05，营业地址 4 The Boulevarde Strathfield NSW 2135。均与目录完整营业地址及当前 ABN 记录交叉对应。
+- 真实分页记录：Strathfield Plaza 2 页、Whim 7 页，未将租户或不对应的主体升级为确认。EL TAURUS 超过 120 秒；Mikazuki 与 Goldway 摘要未取得唯一有效 ABN，均未采纳。
+- 实跑修复：ASIC 在新网址下可能保留上一查询内容，新增结果页搜索词标签校验，拒绝读取上一查询的“无结果”；避免全页导航后重复提交已经对应当前任务的搜索。相关回归测试通过。
+- 最终完整名单 `output/v2_trial/registration_v2_final_20.csv`、逐项结果 `asic_task_results.csv`、原始批次 `asic_final_run.json` 和统计 `summary.json` 已保存。逐项名称顺序与原 20 家基线一致。候选和错误不等于已确认。
+- 仍待解决／验证：ASIC 偶发空白页恢复的无人值守稳定性；真实 Google 密钥联调；真实 ASIC 截图 OCR 备用；连续跨邮编真实联调。没有购买报告、处理验证码或绕过访问限制。
 
 
 ## 插件安装与真实试跑补充

@@ -12,6 +12,8 @@ async function run(text,assigned=true){
 test('exact assigned summary is returned',async()=>{const sent=await run('Business Name Summary\nBusiness name: SYNTHETIC CAFE\nRenewal date: 12/10/2029');assert.equal(sent.length,1);assert.equal(sent[0].action,'result');});
 test('stale previous company is never returned as current result',async()=>{const sent=await run('Business Name Summary\nBusiness name: DIFFERENT CAFE\nRenewal date: 12/10/2029');assert.equal(sent.length,0);});
 test('paused worker prevents page interaction and results',async()=>{assert.equal((await run('Business Name Summary\nBusiness name: SYNTHETIC CAFE',false)).length,0);});
+test('stale zero-result page is ignored until assigned form search is submitted',async()=>{assert.equal((await run('Search Results\n0 results found')).length,0);});
+test('zero-result label must identify the assigned query',async()=>{assert.equal((await run('Search Results\n0 results found for "OTHER CAFE"')).length,0);assert.match((await run('Search Results\n0 results found for "SYNTHETIC CAFE"'))[0].error,/没有结果/);});
 test('verification challenge pauses without interaction',async()=>{const sent=await run('Verify you are human');assert.equal(sent[0].action,'blocked');});
 
 

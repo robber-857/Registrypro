@@ -25,7 +25,12 @@ if(text.includes(marker)){
  if(Date.now()-started>4000&&lookupStage===0){lookup();return;}
  if(Date.now()-started>20000){if(!match){const ocr=await chrome.runtime.sendMessage({action:'ocr',id:task.id});if(ocr.error)await report({error:'文字读取失败；'+ocr.error});else finished=true;}else await report({error:'摘要名称与指定任务不一致'});return;}
 }
-if(/0 results found|no results found/i.test(text)){await report({error:'官方名称搜索没有结果'});return;}
+// ASIC can retain the previous query body after a URL navigation. Submit the
+// assigned search through its form before accepting any search-list outcome.
+const queryLabel=text.match(/results? found for\s+["“']([^"”']+)["”']/i);
+const queryMatches=!!queryLabel&&norm(queryLabel[1])===norm(task.name);
+if(!text.includes(marker)&&lookupStage===0&&!queryMatches&&lookup())return;
+if(/0 results found|no results found/i.test(text)){if(!queryMatches)return;await report({error:'官方名称搜索没有结果'});return;}
 if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){
  if(clickAttempts>=3){await report({error:'精确结果链接三次未响应'});return;}
  const scope=main||document;
