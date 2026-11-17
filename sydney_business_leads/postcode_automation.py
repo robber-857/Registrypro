@@ -23,7 +23,7 @@ def options_checked(options):
         raise ValueError('不支持的任务参数')
     options = dict(options)
     options.setdefault('provider','bing')
-    if options['provider'] not in ('google','bing'):raise ValueError('数据源不正确')
+    if options['provider'] not in ('google','bing','abn'):raise ValueError('数据源不正确')
     if not isinstance(options.get('postcode'), str) or not isinstance(options.get('end_postcode', ''), str):
         raise ValueError('邮编必须是四位数字文本')
     validate(options.get('postcode'), options.get('state'), 20)
@@ -33,8 +33,9 @@ def options_checked(options):
         raise ValueError('结束邮编不能小于起始邮编')
     if type(options.get('delay')) is not int or options['delay'] not in DELAYS:
         raise ValueError('间隔只能选择 5、15、30 或 60 秒')
+    if options['provider']=='abn':options['categories']=['Active ABN'];options['include_nearby']=False
     cats = options.get('categories')
-    if not isinstance(cats, list) or not cats or any(c not in CATEGORIES for c in cats):
+    if not isinstance(cats, list) or not cats or (options['provider']!='abn' and any(c not in CATEGORIES for c in cats)):
         raise ValueError('请选择有效行业')
     for flag in ('refresh', 'include_nearby', 'use_asic'):
         if flag in options and not isinstance(options[flag], bool):
@@ -146,6 +147,18 @@ class Automation:
     def _page(self):
         d = self.data
         o = d['options']
+        if o.get('provider')=='abn':
+            from abn_bulk import query
+            rows,meta=query(d['postcode'],o['state'],20,d['page'])
+            if d['requests'] and d['requests'][0].get('snapshot')!=meta['snapshot']:
+                raise ValueError('ABN 索引已更新，请结束当前任务并重新查询该邮编，避免分页遗漏')
+            with self.lock:
+                d['pending'].extend(rows);d['page']=meta['next_offset']
+                d['requests'].append({'source':'ABN Bulk Extract','snapshot':meta['snapshot'],'offset':meta['offset']})
+                if not meta['has_more']:
+                    d['category_index']=len(o['categories']);d['reasons'].append({'reason':'本地官方快照邮编记录已遍历','category':'Active ABN','pages':d['page']})
+                self._delay();self._checkpoint()
+            return
         cat = o['categories'][d['category_index']]
         url = 'https://www.bing.com/maps/overlaybfpr?' + urlencode({
             'q': f'{CATEGORIES[cat]} near {o["state"]} {d["postcode"]} Australia',
@@ -234,6 +247,8 @@ class Automation:
                         d['message'] = f"邮编 {d['postcode']} · 第 {d['batches'] + 1} 批 · 核查 {len(batch)} 家商家"
                     if d.get('asic_batch'):
                         rows=d['asic_batch']
+                    elif d['options'].get('provider')=='abn':
+                        rows=batch
                     else:
                         with ThreadPoolExecutor(max_workers=4) as pool:
                             rows = list(pool.map(lambda row: enrich(row, d['options']['refresh']), batch))
@@ -270,13 +285,13 @@ class Automation:
                 elif complete:
                     with self.lock:
                         capped = sum('上限' in r['reason'] for r in d['reasons'])
-                        reason = f'{capped} 个行业达到分页上限（可能遗漏）' if capped else '所选行业目录分页无新增条目'
+                        reason = ('本地官方快照中该邮编的 Active ABN 已遍历' if d['options'].get('provider')=='abn' else (f'{capped} 个行业达到分页上限（可能遗漏）' if capped else '所选行业目录分页无新增条目'))
                         self._export(reason + '；非全量名册')
                         self._advance()
                         self._checkpoint()
                 else:
                     with self.lock:
-                        d['message'] = f"邮编 {d['postcode']} · {d['options']['categories'][d['category_index']]} · 目录第 {d['page'] + 1}/{MAX_PAGES} 页"
+                        d['message'] = (f"邮编 {d['postcode']} · 官方快照已读取 {d['page']} 个 Active 主体" if d['options'].get('provider')=='abn' else f"邮编 {d['postcode']} · {d['options']['categories'][d['category_index']]} · 目录第 {d['page'] + 1}/{MAX_PAGES} 页")
                     self._page()
         except Exception as exc:
             with self.lock:

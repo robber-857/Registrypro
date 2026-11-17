@@ -38,7 +38,7 @@ FIELDS = [('name','商家名称'),('category','行业'),('postcode','实际邮�
           ('opportunity','可能需要的服务（待确认）'),('status','核查状态'),
           ('source','目录或原始来源'),('contact_source','联系方式来源'),('checked_at','核查日期'),
           ('notes','备注'),('abn','ABN'),('follow_up','跟进状态')]
-FIELDS += registration.FIELDS
+FIELDS += registration.FIELDS + [('source_provider','名单数据源'),('abn_snapshot_at','ABN 快照时间'),('asic_number','ASIC 原始编号'),('asic_number_type','ASIC 编号类型')]
 
 
 class CollectionError(Exception):
@@ -257,6 +257,11 @@ def annotated_csv(data):
 
 def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, progress=None, cancelled=None, include_nearby=True, provider="bing"):
     validate(postcode,state,limit)
+    if provider=='abn':
+        from abn_bulk import query
+        rows,meta=query(postcode,state,limit)
+        if progress:progress(f'已从官方快照取得 {meta["returned_entities"]} 个 Active ABN / {len(rows)} 个名称',rows)
+        return rows,meta
     if provider not in ('google','bing'):raise CollectionError('数据源不正确')
     if provider=='google':
         from google_places import configured
@@ -346,7 +351,7 @@ def save_run(rows,meta):
 def main():
     p=argparse.ArgumentParser(description='无需 GUID 的公开商家候选名单收集')
     p.add_argument('--postcode',required=True); p.add_argument('--state',default='NSW',choices=STATES)
-    p.add_argument('--provider',choices=['bing','google'],default='bing')
+    p.add_argument('--provider',choices=['bing','google','abn'],default='bing')
     p.add_argument('--limit',type=int,default=20); p.add_argument('--refresh',action='store_true')
     p.add_argument('--strict-postcode',action='store_true',help='仅保留目标邮编，默认也保留目录返回的同州邻区候选')
     a=p.parse_args()

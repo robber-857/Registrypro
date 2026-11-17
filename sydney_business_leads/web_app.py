@@ -222,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
             if options.get('provider')=='google':
                 from google_places import configured
                 if not configured():raise ValueError('Google Maps 尚未配置 GOOGLE_PLACES_API_KEY；保留当前名单，未回退 Bing。')
-            if not options.get('categories') or any(c not in CATEGORIES for c in options['categories']):
+            if options.get('provider')!='abn' and (not options.get('categories') or any(c not in CATEGORIES for c in options['categories'])):
                 raise ValueError('至少选择一个行业')
             for flag in ('refresh','include_nearby'):
                 if flag in options and not isinstance(options[flag],bool): raise ValueError('选项格式不正确')

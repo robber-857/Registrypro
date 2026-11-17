@@ -257,3 +257,26 @@ https://data.gov.au/data/dataset/5bd7fcab-e315-42cb-8daf-50b7efc2027e/resource/3
 https://abr.business.gov.au/Documentation/DownloadCompressedFile?downloadAs=AbnLookupSchema.zip&filename=AbnLookupSchema.zip
 
 源数据由 Australian Business Register / ABN Lookup 提供；脚本为独立工具，不代表政府认可。
+
+
+## ABN 官方名单入口（2026-11-17）
+
+在「名单来源」选择「ABN 官方公开数据（Active 主体）」，输入州、邮编及数量即可查询。本机必须先准备索引；不需要 ABN Lookup GUID。地图入口保持可用。
+
+首次或每周更新，在项目根目录运行：
+
+```powershell
+python sydney_business_leads/update_abn_data.py
+```
+
+脚本从官方 data.gov.au 元数据定位两个 ZIP，核对下载大小，完整解析 20 个 XML 后原子替换 SQLite 索引。更新失败保留旧索引；页面展示快照日期。约 1 GB 下载，本机索引另外占用磁盘空间。`output/abn_data` 为本地数据，不进入代码仓库。
+
+名单规则：仅保留 ACT ABN，按主要经营地点的州和邮编精确筛选。法定名称与 OtherEntity 中 BN 类型的 Business Name 分开；TRD 旧交易名称不冒充商号。同一个 ABN 的多个商号各占一行，数量上限按主体计，所以 20 个主体可能多于 20 行。没有商号的主体保留并跳过 ASIC 续期查询。
+
+ASIC 编号单独保留原值和类型。明确 ACN 直接提取；`undetermined` 仅在澳大利亚私人/公众公司、编号为九位、校验位有效且与 ABN 后九位一致时归类为 ACN，并在备注说明依据。ARBN 等其他类型不放入 ACN。
+
+连续任务沿用上方名单来源。先连接 ASIC 插件并勾选等待连续队列，再在网页勾选「每批等待 ASIC 插件核对后保存并推进邮编」，设置起止邮编后启动。ABN 名单不读取商家网站或重新模糊搜索持有人；商号及 ABN 直接进入插件。每批最多 20 行；完成核对后保存 CSV，当前邮编全部分页处理后推进下一个邮编。Cancelled 及异常处理沿用现有插件逻辑。重启本机服务后需使用网页当前配对码重新连接插件。
+
+官方快照 Active 是 ABN 状态，不证明商号状态仍为 Registered，也不是实际门店清单。它没有行业分类、街道地址、电话或网站，不提供 Renewal Date。续期日期仍由 ASIC 查询；遇到真正人机验证仍需要手动完成。
+
+官方来源： https://abr.business.gov.au/Tools/BulkExtract

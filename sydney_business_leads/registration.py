@@ -61,7 +61,7 @@ def dedupe(rows):
     result=[];subjects={}
     for original in rows:
         row=dict(original)
-        abn=row.get('abn') if row.get('identity_status') in ('自动匹配','人工核实') else ''
+        abn=row.get('abn') if row.get('source_provider')!='abn_bulk' and row.get('identity_status') in ('自动匹配','人工核实') else ''
         location={k:row.get(k,'') for k in ('name','address','source')}
         if abn and abn in subjects:
             target=subjects[abn]

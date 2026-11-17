@@ -133,6 +133,14 @@ def build(rows,generation=None,refresh=False,include_company=False):
         with LOCK:
             if generation is not None and (STATE.get('generation')!=generation or STATE['state']=='stopped'):return
             STATE['message']='准备浏览器查询：'+row['name']
+        if row.get('source_provider')=='abn_bulk':
+            name=row.get('business_name','');abn=row.get('abn','')
+            task={'id':secrets.token_hex(12),'row':row,'related_rows':[],'key':registration.key(row),'kind':'business','name':name or row['name'],'abn':abn,'acn':row.get('acn',''),'state':'queued' if name else 'done','cached':False,'allowed_names':[normalized(name)] if name else [],'alternatives':[],'screenshot_first':__import__('ocr_vision').configuration().get('enabled',False),'url':'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/panelSearch.jspx?'+urlencode({'searchTab':'bnsearch','searchName':name,'searchType':'Bn'})}
+            if not name:
+                task['preflight_outcome']='ABN 官方记录未提供 Business Name，记录并跳过续期查询'
+                registration.update_browser(task['key'],{'browser_last_result':task['preflight_outcome'],'match_status':'未提供商号','auto_reason':task['preflight_outcome']})
+            tasks.append(task)
+            continue
         known=registration.apply([row])[0]
         candidates=json.loads(known.get('auto_candidates') or '[]')
         if known.get('abn'):candidates.insert(0,{'abn':known['abn']})
@@ -187,7 +195,8 @@ def build(rows,generation=None,refresh=False,include_company=False):
     with LOCK:
         if generation is not None and (STATE.get('generation')!=generation or STATE['state']=='stopped'):return
         STATE.update(rows=rows)
-        STATE.update(state='ready',tasks=tasks,message=f'已准备 {len(tasks)} 项查询（默认每主体一个名称）',results=[{'name':t['row']['name'],'message':'24 小时摘要缓存：'+t.get('cache_outcome','已确认日期'), 'fetched_at':t.get('cache_fetched_at'),'cached':True} for t in tasks if t.get('cached')])
+        STATE.update(state='ready',tasks=tasks,message=f'已准备 {len(tasks)} 项查询（官方名单按每个商号分别查询）',results=[{'name':t['row']['name'],'message':'24 小时摘要缓存：'+t.get('cache_outcome','已确认日期'), 'fetched_at':t.get('cache_fetched_at'),'cached':True} for t in tasks if t.get('cached')]+[{'name':t['row']['name'],'message':t['preflight_outcome'],'cached':False,'seconds':0} for t in tasks if t.get('preflight_outcome')])
+        if all(t['state']=='done' for t in tasks):STATE.update(state='done',finished_at=time.time(),message='名单已处理；没有待补查商号')
         checkpoint()
 
 
