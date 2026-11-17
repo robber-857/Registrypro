@@ -2,6 +2,26 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
+test('hidden and offscreen challenge frames do not count as visible verification',()=>{
+ const frame={offsetWidth:300,parentElement:null,getBoundingClientRect:()=>({left:10,top:10,right:310,bottom:310,width:300,height:300})};
+ const context=vm.createContext({innerWidth:900,innerHeight:600,getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'}),setInterval:()=>{},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async()=>({})}}});
+ vm.runInContext(fs.readFileSync(__dirname+'/reader.js','utf8'),context);context.frame=frame;
+ assert.equal(vm.runInContext('challengeVisible(frame)',context),true);
+ frame.getBoundingClientRect=()=>({left:-10000,top:10,right:-9700,bottom:310,width:300,height:300});
+ assert.equal(vm.runInContext('challengeVisible(frame)',context),false);
+ frame.getBoundingClientRect=()=>({left:10,top:10,right:310,bottom:310,width:300,height:300});
+ context.getComputedStyle=()=>({display:'block',visibility:'hidden',opacity:'1'});
+ assert.equal(vm.runInContext('challengeVisible(frame)',context),false);
+});
+test('verification monitoring waits for stable normal page and never clicks challenge',async()=>{
+ let now=0,interval;const sent=[];const main={innerText:'Verify you are human'};
+ const context=vm.createContext({Date:{now:()=>now},setInterval:f=>interval=f,document:{body:main,querySelector:()=>null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async m=>{if(m.action==='task')return {task:{id:'v',kind:'business',name:'Cafe'},monitorOnly:true};sent.push(m);return {ok:true};}}}});
+ vm.runInContext(fs.readFileSync(__dirname+'/reader.js','utf8'),context);await new Promise(r=>setImmediate(r));
+ now=10000;await interval();assert.equal(sent.length,0);
+ main.innerText='Search ASIC Registers Search Results';await interval();now=14000;await interval();assert.equal(sent.length,0);
+ main.innerText='';now=16000;await interval();assert.equal(sent.length,0);
+ main.innerText='Search ASIC Registers Search Results';await interval();now=22000;await interval();assert.equal(sent.length,1);assert.equal(sent[0].action,'verification-cleared');
+});
 async function run(text,assigned=true,elapsed=0){
  let now=0,interval;
  const sent=[];const task={id:'task1',kind:'business',name:'SYNTHETIC CAFE'};

@@ -253,6 +253,7 @@ class Automation:
                             status=browser_registry.snapshot()
                             with self.lock:d['message']=f"邮编 {d['postcode']} · ASIC {status['completed']}/{status['total']} · {status['message']}"
                             if status['state']=='done':break
+                            if status['state']=='paused' and status.get('pause_reason')=='verification':continue
                             if status['state'] in ('paused','error','stopped'):raise ValueError('ASIC 队列暂停或中断；已保存浏览器进度')
                         if self.stop.is_set():
                             browser_registry.pause('连续邮编任务已暂停')

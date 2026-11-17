@@ -134,9 +134,9 @@ class Handler(BaseHTTPRequestHandler):
                 body=json.loads(self.rfile.read(length))
                 if not isinstance(body,dict):raise ValueError('请求格式不正确')
                 if self.path=='/api/browser/pause':
-                    browser_registry.pause(str(body.get('message','插件已暂停'))[:300]);return self.reply(200,{'ok':True})
+                    browser_registry.pause(str(body.get('message','插件已暂停'))[:300],reason='verification' if body.get('reason')=='verification' else 'manual');return self.reply(200,{'ok':True})
                 if self.path=='/api/browser/resume':
-                    browser_registry.resume();return self.reply(200,{'ok':True})
+                    resumed=browser_registry.resume(automatic=body.get('automatic') is True);return self.reply(200,{'ok':True,'resumed':resumed})
                 if self.path=='/api/browser/result':return self.reply(200,{'message':browser_registry.result(body)})
                 if self.path=='/api/browser/stop':
                     browser_registry.stop();return self.reply(200,{'ok':True})

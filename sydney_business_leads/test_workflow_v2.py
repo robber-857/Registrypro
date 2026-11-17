@@ -11,6 +11,15 @@ from name_matching import similarity, rank_names
 
 
 class WorkflowV2Tests(unittest.TestCase):
+    def test_verification_auto_resume_cannot_override_manual_pause(self):
+        with patch.dict(b.STATE, {'state':'running','tasks':[]},clear=True):
+            b.pause('verification',reason='verification')
+            self.assertTrue(b.resume(automatic=True))
+            b.STATE['state']='running'
+            b.pause('user pause')
+            self.assertFalse(b.resume(automatic=True))
+            self.assertEqual(b.STATE['state'],'paused')
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.path=patch.object(registration,'PATH',Path(self.temp.name)/'manual.json');self.path.start()
@@ -80,8 +89,13 @@ class WorkflowV2Tests(unittest.TestCase):
         from test_automation import options,source
         manager=a.Automation(Path(self.temp.name)/'automation')
         fake={'state':'idle','generation':'synthetic-queue','completed':0,'total':1,'message':'fixture'}
-        def start(rows,**kwargs):fake.update(state='done',completed=1)
-        with patch.object(a,'fetch',side_effect=source),patch.object(a,'enrich',side_effect=lambda row,refresh:row),patch.object(manager,'_wait',return_value=True),patch.object(manager.stop,'wait',return_value=False),patch.object(b,'snapshot',side_effect=lambda:dict(fake)),patch.object(b,'start',side_effect=start) as begin:
+        def start(rows,**kwargs):fake.update(state='paused',pause_reason='verification',completed=0,observations=0)
+        def snapshot():
+            if fake['state']=='paused':
+                fake['observations']+=1
+                if fake['observations']>=3:fake.update(state='done',completed=1,pause_reason=None)
+            return dict(fake)
+        with patch.object(a,'fetch',side_effect=source),patch.object(a,'enrich',side_effect=lambda row,refresh:row),patch.object(manager,'_wait',return_value=True),patch.object(manager.stop,'wait',return_value=False),patch.object(b,'snapshot',side_effect=snapshot),patch.object(b,'start',side_effect=start) as begin:
             manager.start({**options(), 'end_postcode':'2134','use_asic':True})
             manager.thread.join(5)
         self.assertFalse(manager.running())

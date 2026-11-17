@@ -205,7 +205,7 @@ def start(rows,refresh=False,include_company=False):
 
 def snapshot():
     with LOCK:
-        return {'state':STATE['state'],'message':STATE['message'],'total':len(STATE['tasks']),
+        return {'state':STATE['state'],'message':STATE['message'],'pause_reason':STATE.get('pause_reason'),'total':len(STATE['tasks']),
                 'completed':sum(t['state']=='done' for t in STATE['tasks']),'results':list(STATE['results']),'elapsed_seconds':round(STATE.get('finished_at',time.time())-STATE.get('started_at',time.time()),1),'generation':STATE.get('generation'),'cache_hits':sum(bool(t.get('cached')) for t in STATE['tasks'])}
 
 
@@ -351,17 +351,20 @@ def stop():
         checkpoint();export_progress()
 
 
-def pause(message='插件已暂停'):
+def pause(message='插件已暂停', reason='manual'):
     with LOCK:
         if STATE['state'] not in ('done','stopped','idle'):
-            STATE.update(state='paused',message=message)
+            STATE.update(state='paused',message=message,pause_reason=reason)
             checkpoint()
 
 
-def resume():
+def resume(automatic=False):
     with LOCK:
+        if automatic and (STATE['state']!='paused' or STATE.get('pause_reason')!='verification'):return False
         if STATE['state']=='paused':
             for task in STATE['tasks']:
                 if task['state']=='running':task['started_at']=time.time()
-            STATE.update(state='ready',message='插件继续查询')
+            STATE.update(state='ready',message='插件继续查询',pause_reason=None)
             checkpoint()
+            return True
+        return False

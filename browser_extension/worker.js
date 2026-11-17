@@ -1,5 +1,5 @@
 const BASE='http://127.0.0.1:8765';let ticking=false;
-async function state(){return chrome.storage.session.get(['config','running','active','message','nextAt','tabId']);}
+async function state(){return chrome.storage.session.get(['config','running','active','message','nextAt','tabId','pauseReason','blockedAt']);}
 async function api(path,body){const {config}=await state();if(!config?.token)throw Error('请填写本机配对码');const response=await fetch(BASE+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Local-Token':config.token},...(body?{body:JSON.stringify(body)}:{})});const data=await response.json();if(!response.ok)throw Error(data.error||'本机接口失败');return data;}
 async function setMessage(message){await chrome.storage.session.set({message});}
 function later(ms=1500){setTimeout(()=>tick(),ms);}
@@ -22,9 +22,18 @@ chrome.alarms.create('registry-tick',{periodInMinutes:0.5});chrome.alarms.onAlar
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{(async()=>{
 const s=await state();
 if(sender.tab){if(sender.tab.id!==s.active?.tabId||!sender.url?.startsWith('https://connectonline.asic.gov.au/RegistrySearch/'))throw Error('不是当前查询标签页');
-if(message.action==='task'){if(message.id&&message.id!==s.active.task.id)return {task:null};return {task:s.running?s.active.task:null};}
-if(!s.running||message.id!==s.active.task.id)return {ignored:true};
-if(message.action==='blocked'){await api('/api/browser/pause',{message:'ASIC 要求人工验证；插件已暂停'});await chrome.storage.session.set({running:false,message:'已暂停：ASIC 要求人工验证。请在该标签页处理后点击继续。'});return {ok:true};}
+if(message.action==='task'){if(message.id&&message.id!==s.active.task.id)return {task:null};return {task:s.running||s.pauseReason==='verification'?s.active.task:null,monitorOnly:!s.running&&s.pauseReason==='verification'};}
+if(message.id!==s.active.task.id)return {ignored:true};
+if(message.action==='verification-cleared'){
+ if(s.pauseReason!=='verification'||s.running)return {ignored:true};
+ const result=await api('/api/browser/resume',{automatic:true});
+ if(!result.resumed){await chrome.storage.session.set({pauseReason:'manual',message:'队列已由用户暂停或停止'});return {ignored:true};}
+ s.active.startedAt+=Math.max(0,Date.now()-s.blockedAt);
+ s.active.verificationResumes=(s.active.verificationResumes||0)+1;
+ await chrome.storage.session.set({active:s.active,running:true,pauseReason:null,blockedAt:null,message:'验证提示已消失，自动继续'});later();return {ok:true};
+}
+if(!s.running)return {ignored:true};
+if(message.action==='blocked'){await api('/api/browser/pause',{reason:'verification',message:'等待 ASIC 验证结束；正常页面恢复后自动继续'});await chrome.storage.session.set({running:false,pauseReason:'verification',blockedAt:Date.now(),message:'等待 ASIC 验证结束；正常页面恢复后自动继续'});return {ok:true};}
 if(message.action==='recover')return recover(s,message.reason||'页面无响应');
 if(message.action==='ocr'){
  const tab=await chrome.tabs.get(sender.tab.id);
@@ -33,12 +42,12 @@ if(message.action==='ocr'){
  await api('/api/browser/result',{id:message.id,url:sender.url,screenshot});
  await chrome.storage.session.remove('active');await chrome.storage.session.set({nextAt:Date.now()+s.config.delay*1000,message:'已处理本机 OCR 备用结果'});later();return {ok:true};
 }
-if(message.action==='result'){await api('/api/browser/result',{id:message.id,url:sender.url,text:message.text||'',error:message.error||'',candidates:message.candidates||[],metrics:{...message.metrics,auto_recoveries:s.active.recoveries||0}});await chrome.storage.session.remove('active');await chrome.storage.session.set({nextAt:Date.now()+s.config.delay*1000,message:'已保存 '+s.active.task.name});later();return {ok:true};}
+if(message.action==='result'){await api('/api/browser/result',{id:message.id,url:sender.url,text:message.text||'',error:message.error||'',candidates:message.candidates||[],metrics:{...message.metrics,auto_recoveries:s.active.recoveries||0,verification_resumes:s.active.verificationResumes||0}});await chrome.storage.session.remove('active');await chrome.storage.session.set({nextAt:Date.now()+s.config.delay*1000,message:'已保存 '+s.active.task.name});later();return {ok:true};}
 throw Error('不支持的页面消息');}
 if(sender.id!==chrome.runtime.id)throw Error('不支持的消息来源');
 if(message.action==='status')return {message:s.message,running:s.running};
-if(message.action==='start'){const c=message.config;if(!c?.token||!['manual','reviewed','automation'].includes(c.scope)||![5,15,30,60].includes(c.delay))throw Error('请检查配对码与设置');if(s.running)throw Error('已有任务正在运行');await chrome.storage.session.set({config:c});if(!c.follow)await api('/api/browser/start',{scope:c.scope,refresh:!!c.refresh,include_company:!!c.include_company});await chrome.storage.session.remove('active');await chrome.storage.session.set({running:true,nextAt:0,message:'正在准备查询队列'});later();return {message:'已开始，关闭弹窗不影响任务'};}
-if(message.action==='pause'){await api('/api/browser/pause',{message:'插件已暂停；已保存结果保留'});await chrome.storage.session.set({running:false,message:'已暂停；已保存结果保留'});return {message:'已暂停'};}
-if(message.action==='resume'){if(message.config?.token)await chrome.storage.session.set({config:message.config});await api('/api/browser/resume',{});if(s.active){s.active.startedAt=Date.now();await chrome.storage.session.set({active:s.active});}await chrome.storage.session.set({running:true});if(s.active){await chrome.tabs.sendMessage(s.active.tabId,{action:'resume'});}later();return {message:'正在继续'};}
+if(message.action==='start'){const c=message.config;if(!c?.token||!['manual','reviewed','automation'].includes(c.scope)||![5,15,30,60].includes(c.delay))throw Error('请检查配对码与设置');if(s.running)throw Error('已有任务正在运行');await chrome.storage.session.set({config:c});if(!c.follow)await api('/api/browser/start',{scope:c.scope,refresh:!!c.refresh,include_company:!!c.include_company});await chrome.storage.session.remove('active');await chrome.storage.session.set({running:true,pauseReason:null,blockedAt:null,nextAt:0,message:'正在准备查询队列'});later();return {message:'已开始，关闭弹窗不影响任务'};}
+if(message.action==='pause'){await api('/api/browser/pause',{message:'插件已暂停；已保存结果保留'});await chrome.storage.session.set({running:false,pauseReason:'manual',blockedAt:null,message:'已暂停；已保存结果保留'});return {message:'已暂停'};}
+if(message.action==='resume'){if(message.config?.token)await chrome.storage.session.set({config:message.config});await api('/api/browser/resume',{});if(s.active){s.active.startedAt=Date.now();await chrome.storage.session.set({active:s.active});}await chrome.storage.session.set({running:true,pauseReason:null,blockedAt:null});if(s.active){await chrome.tabs.sendMessage(s.active.tabId,{action:'resume'});}later();return {message:'正在继续'};}
 throw Error('未知操作');
 })().then(reply).catch(e=>reply({error:e.message}));return true;});

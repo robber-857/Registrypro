@@ -2,7 +2,14 @@
 let task=null,finished=false,clicked=false,started=Date.now(),lookupStage=0,formWaits=0,clickAt=0,clickAttempts=0,pageNumber=1,pageWait=0,pageSignature="",seenResults=[],returnPage=0,selectedName="",busy=false;
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
 const visible=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
-let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null;
+function challengeVisible(e){
+ if(!visible(e))return false;
+ const r=e.getBoundingClientRect();
+ if(r.width<20||r.height<20||r.right<=0||r.bottom<=0||r.left>=innerWidth||r.top>=innerHeight)return false;
+ for(let p=e;p;p=p.parentElement){const style=getComputedStyle(p);if(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0)return false;}
+ return true;
+}
+let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null,clearSince=null;
 async function recoverPage(reason){
  if(recovering)return;recovering=true;
  const response=await chrome.runtime.sendMessage({action:'recover',id:task.id,reason});
@@ -23,13 +30,22 @@ function lookup(){
 }
 async function step(){if(busy||recovering)return;busy=true;try{const response=await chrome.runtime.sendMessage({action:'task',id:task?.id});if(!response.task)return;task=response.task;if(finished)return;
 const main=document.querySelector('main,[role="main"]');const text=(main||document.body)?.innerText||'';
-if(/verify you are human|captcha|unusual traffic|access denied/i.test(text)||Array.from(document.querySelectorAll('iframe[title]')).some(e=>visible(e)&&/recaptcha.*challenge|challenge.*recaptcha/i.test(e.title))){
+if(/verify you are human|captcha|unusual traffic|access denied/i.test(text)||Array.from(document.querySelectorAll('iframe[title]')).some(e=>/recaptcha.*challenge|challenge.*recaptcha/i.test(e.title)&&challengeVisible(e))){
+ clearSince=null;
  if(challengeSince===null)challengeSince=Date.now();
- if(Date.now()-challengeSince>=2500){finished=true;await chrome.runtime.sendMessage({action:'blocked',id:task.id});}
+ if(!response.monitorOnly&&Date.now()-challengeSince>=2500){await chrome.runtime.sendMessage({action:'blocked',id:task.id});}
  return;
 }
 challengeSince=null;
 const marker=task.kind==='business'?'Business Name Summary':'Company Summary';
+if(response.monitorOnly){
+ const normal=/Search ASIC Registers/.test(document.body?.innerText||text)&&(/Search Results|Business Name Summary|Company Summary/.test(text)||document.querySelector('select[id$="templateSearchTypesListOfValuesId::content"]'));
+ if(!normal){clearSince=null;return;}
+ if(clearSince===null)clearSince=Date.now();
+ if(Date.now()-clearSince>=5000){await chrome.runtime.sendMessage({action:'verification-cleared',id:task.id});clearSince=null;started=Date.now();changedAt=Date.now();}
+ return;
+}
+clearSince=null;
 if(text!==lastContent){lastContent=text;changedAt=Date.now();}
 if(!text.trim()&&Date.now()-started>12000){await recoverPage('ASIC 空白页');return;}
 if(Date.now()-changedAt>45000&&!text.includes(marker)){await recoverPage('页面内容 45 秒未推进');return;}
