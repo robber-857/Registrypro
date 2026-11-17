@@ -130,13 +130,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/browser/'):
             try:
                 length=int(self.headers.get('Content-Length','0'))
-                if not 1<=length<=180000:raise ValueError('请求大小不正确')
+                if not 1<=length<=5500000:raise ValueError('请求大小不正确')
                 body=json.loads(self.rfile.read(length))
                 if not isinstance(body,dict):raise ValueError('请求格式不正确')
+                if self.path=='/api/browser/pause':
+                    browser_registry.pause(str(body.get('message','插件已暂停'))[:300]);return self.reply(200,{'ok':True})
+                if self.path=='/api/browser/resume':
+                    browser_registry.resume();return self.reply(200,{'ok':True})
                 if self.path=='/api/browser/result':return self.reply(200,{'message':browser_registry.result(body)})
                 if self.path=='/api/browser/stop':
                     browser_registry.stop();return self.reply(200,{'ok':True})
                 if self.path=='/api/browser/start':
+                    for flag in ('refresh','include_company'):
+                        if flag in body and not isinstance(body[flag],bool):raise ValueError('插件选项格式不正确')
                     with LOCK:
                         if JOB['state']=='running' or AUTO.running() or AUDIT['state']=='running':raise ValueError('请先等待或暂停当前采集任务')
                         scope=body.get('scope')
@@ -145,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
                         elif scope=='automation':rows=registration.apply(AUTO.snapshot()['rows'])
                         else:raise ValueError('名单范围不正确')
                         if not rows:raise ValueError('名单为空')
-                        browser_registry.start(rows)
+                        browser_registry.start(rows,refresh=body.get('refresh',False),include_company=body.get('include_company',False))
                     return self.reply(202,{'ok':True})
                 return self.reply(404,{'error':'Not found'})
             except (ValueError,TypeError,OSError) as exc:return self.reply(400,{'error':str(exc)})
@@ -205,9 +211,12 @@ class Handler(BaseHTTPRequestHandler):
             if length<1 or length>4096: raise ValueError('请求大小不正确')
             options=json.loads(self.rfile.read(length))
             if not isinstance(options,dict): raise ValueError('请求格式不正确')
-            allowed={'postcode','state','limit','categories','refresh','include_nearby'}
+            allowed={'postcode','state','limit','categories','refresh','include_nearby','provider'}
             if set(options)-allowed: raise ValueError('不支持的查询参数')
             validate(options.get('postcode'),options.get('state'),options.get('limit'))
+            if options.get('provider')=='google':
+                from google_places import configured
+                if not configured():raise ValueError('Google Maps 尚未配置 GOOGLE_PLACES_API_KEY；保留当前名单，未回退 Bing。')
             if not options.get('categories') or any(c not in CATEGORIES for c in options['categories']):
                 raise ValueError('至少选择一个行业')
             for flag in ('refresh','include_nearby'):

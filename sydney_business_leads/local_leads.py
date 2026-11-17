@@ -230,7 +230,7 @@ def enrich_registered(row,refresh=False):
 def csv_bytes(rows):
     buf=io.StringIO(newline=''); w=csv.writer(buf)
     w.writerow([v for _,v in FIELDS])
-    for r in registration.apply(rows):
+    for r in registration.dedupe(registration.apply(rows)):
         values=[]
         for key,_ in FIELDS:
             value=str(r.get(key,'') or '')
@@ -255,16 +255,22 @@ def annotated_csv(data):
     return csv_bytes(rows)
 
 
-def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, progress=None, cancelled=None, include_nearby=True):
+def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, progress=None, cancelled=None, include_nearby=True, provider="bing"):
     validate(postcode,state,limit)
+    if provider not in ('google','bing'):raise CollectionError('数据源不正确')
+    if provider=='google':
+        from google_places import configured
+        if not configured():raise CollectionError('Google Maps 尚未配置 GOOGLE_PLACES_API_KEY；未回退 Bing。')
+    tokens={};ended=set()
     cats=categories or list(CATEGORIES)
     if not cats or any(c not in CATEGORIES for c in cats):
         raise CollectionError('请选择列表中的行业。')
     tell=progress or (lambda message,rows:None)
     cancelled=cancelled or (lambda:False)
     rows=[]; seen=set(); errors=[]; directory_requests=[]; excluded=0
-    for page_no in range(2):
+    for page_no in range(3 if provider=="google" else 2):
         for cat in cats:
+            if cat in ended:continue
             if cancelled() or len(rows)>=limit:
                 break
             tell(f'正在搜索 {state} {postcode} · {cat}（第 {page_no+1} 页）',rows)
@@ -272,9 +278,15 @@ def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, pro
                 'q':f'{CATEGORIES[cat]} near {state} {postcode} Australia',
                 'count':30,'first':page_no*30,'setlang':'en-US','cc':'AU'})
             try:
-                text,source,cached=fetch(url,refresh,ttl=3600)
-                directory_requests.append({'url':source,'cached':cached})
-                items=parse_listings(text)
+                if provider=='google':
+                    from google_places import search_page,ENDPOINT
+                    items,tokens[cat]=search_page(f'{CATEGORIES[cat]} near {state} {postcode} Australia',tokens.get(cat,''))
+                    source,cached=ENDPOINT,False
+                    if not tokens[cat]:ended.add(cat)
+                else:
+                    text,source,cached=fetch(url,refresh,ttl=3600)
+                    items=parse_listings(text)
+                directory_requests.append({'url':source,'cached':cached,'provider':provider})
             except Exception as e:
                 errors.append(f'{cat} 第 {page_no+1} 页：{e}')
                 continue
@@ -294,8 +306,8 @@ def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, pro
                 rows.append({'id':len(rows)+1,'name':item['title'],'category':item.get('primaryCategoryName') or cat,
                     'postcode':actual_postcode,'requested_postcode':postcode,'location_scope':'目标邮编' if target_match else '邻区候选（搜索目录返回，距离未核实）','state':state,'address':item['address'],'website':item.get('website') or '',
                     'phone':item.get('phone') or '','email':'','contact_page':'','observed':'','opportunity':'',
-                    'status':'仅目录资料，待复核','source':'https://www.bing.com/maps?'+urlencode({'ss':'ypid.'+ident}) if ident else source,
-                    'contact_source':'Bing Maps 商家目录（未电话验证）','checked_at':datetime.now(timezone.utc).isoformat(),
+                    'status':'仅目录资料，待复核','source':item.get('source') or ('https://www.bing.com/maps?'+urlencode({'ss':'ypid.'+ident}) if ident and provider=='bing' else source),
+                    'contact_source':('Google Maps / Places' if provider=='google' else 'Bing Maps')+' 商家目录（未电话验证）','checked_at':datetime.now(timezone.utc).isoformat(),
                     'notes':'目录可能过期；服务建议待商家确认。','abn':'','follow_up':'未联系'})
                 added+=1
                 if len(rows)>=limit or (page_no==0 and added>=max(1,limit//len(cats))):
@@ -315,7 +327,7 @@ def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, pro
                     for t in tasks: t.cancel()
                     break
     meta={'postcode':postcode,'state':state,'requested_limit':limit,'returned':len(rows),'categories':cats,
-          'status':'cancelled' if cancelled() else ('partial' if errors else 'finished'),
+          'provider':provider,'status':'cancelled' if cancelled() else ('partial' if errors else 'finished'),
           'target_reached':len(rows)>=limit,'complete_area_census':False,'include_nearby':include_nearby,'errors':errors,
           'excluded_outside_postcode_or_state':excluded,'requests':directory_requests,
           'scope':'Public directory candidates; not an ABN or ASIC census. Websites and contacts require review.',
@@ -334,11 +346,12 @@ def save_run(rows,meta):
 def main():
     p=argparse.ArgumentParser(description='无需 GUID 的公开商家候选名单收集')
     p.add_argument('--postcode',required=True); p.add_argument('--state',default='NSW',choices=STATES)
+    p.add_argument('--provider',choices=['bing','google'],default='bing')
     p.add_argument('--limit',type=int,default=20); p.add_argument('--refresh',action='store_true')
     p.add_argument('--strict-postcode',action='store_true',help='仅保留目标邮编，默认也保留目录返回的同州邻区候选')
     a=p.parse_args()
     try:
-        rows,meta=collect(a.postcode,a.state,a.limit,refresh=a.refresh,include_nearby=not a.strict_postcode,progress=lambda s,r:print(s,flush=True))
+        rows,meta=collect(a.postcode,a.state,a.limit,refresh=a.refresh,include_nearby=not a.strict_postcode,provider=a.provider,progress=lambda s,r:print(s,flush=True))
         print(OUTPUT/(save_run(rows,meta)+'.csv'))
         print(f"实际取得 {len(rows)} 条；状态 {meta['status']}；不代表地区全部企业。")
         return 0 if meta['status']=='finished' else 2

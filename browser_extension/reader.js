@@ -1,8 +1,8 @@
 // Reads only the assigned public ASIC tab. No payment, login or CAPTCHA interaction.
-let task=null,finished=false,clicked=false,started=Date.now(),lookupStage=0,formWaits=0,clickAt=0,clickAttempts=0;
+let task=null,finished=false,clicked=false,started=Date.now(),lookupStage=0,formWaits=0,clickAt=0,clickAttempts=0,pageNumber=1,pageWait=0,pageSignature="",seenResults=[],returnPage=0,selectedName="",busy=false;
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
 const visible=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
-async function report(result){if(finished)return;finished=true;const response=await chrome.runtime.sendMessage({action:'result',id:task.id,...result});if(response.error){finished=false;}}
+async function report(result){if(finished)return;finished=true;const response=await chrome.runtime.sendMessage({action:'result',id:task.id,metrics:{result_pages:pageNumber,detail_clicks:clickAttempts},...result});if(response.error){finished=false;}}
 function lookup(){
  const select=document.querySelector('select[id$="templateSearchTypesListOfValuesId::content"]');
  if(!select)return false;
@@ -13,28 +13,49 @@ function lookup(){
  if(lookupStage===2){document.querySelector('[id="bnConnectionTemplate:pt_s5:searchButtonId"]')?.click();lookupStage=3;started=Date.now();return true;}
  return false;
 }
-async function step(){try{const response=await chrome.runtime.sendMessage({action:'task'});if(!response.task)return;task=response.task;if(finished)return;
+async function step(){if(busy)return;busy=true;try{const response=await chrome.runtime.sendMessage({action:'task'});if(!response.task)return;task=response.task;if(finished)return;
 const main=document.querySelector('main,[role="main"]');const text=(main||document.body).innerText;
 if(/verify you are human|captcha|unusual traffic|access denied/i.test(text)||Array.from(document.querySelectorAll('iframe[title]')).some(e=>visible(e)&&/recaptcha.*challenge|challenge.*recaptcha/i.test(e.title))){finished=true;await chrome.runtime.sendMessage({action:'blocked',id:task.id});return;}
 const marker=task.kind==='business'?'Business Name Summary':'Company Summary';
-if(Date.now()-started>110000){await report({error:'页面未返回可识别免费摘要'});return;}
+if(Date.now()-started>110000){const ocr=await chrome.runtime.sendMessage({action:'ocr',id:task.id});if(ocr.error)await report({error:'页面未返回可识别免费摘要；'+ocr.error});else finished=true;return;}
 if(lookupStage===1||lookupStage===2){lookup();return;}
 if(text.includes(marker)){
  const label=task.kind==='business'?'Business name':'Name';const match=text.match(new RegExp('(?:^|\\n)\\s*'+label+'\\s*:\\s*([^\\n]+)','i'));
- if(match&&norm(match[1])===norm(task.name)){await report({text:text.slice(0,150000)});return;}
+ if(match&&norm(match[1])===norm(selectedName||task.name)){await report({text:text.slice(0,150000)});return;}
  if(Date.now()-started>4000&&lookupStage===0){lookup();return;}
- if(Date.now()-started>20000){await report({error:'摘要名称与指定任务不一致'});return;}
+ if(Date.now()-started>20000){if(!match){const ocr=await chrome.runtime.sendMessage({action:'ocr',id:task.id});if(ocr.error)await report({error:'文字读取失败；'+ocr.error});else finished=true;}else await report({error:'摘要名称与指定任务不一致'});return;}
 }
 if(/0 results found|no results found/i.test(text)){await report({error:'官方名称搜索没有结果'});return;}
 if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){
  if(clickAttempts>=3){await report({error:'精确结果链接三次未响应'});return;}
- const links=Array.from((main||document).querySelectorAll('a')).filter(e=>visible(e)&&norm(e.innerText)===norm(task.name));
- if(links.length===1){clicked=true;clickAt=Date.now();clickAttempts++;links[0].click();return;}
- if(links.length>1){await report({error:'多个同名结果，未任意选择'});return;}
- if(Date.now()-started>20000){await report({error:'搜索结果没有唯一精确名称；保留候选'});return;}
+ const scope=main||document;
+ const links=Array.from(scope.querySelectorAll('a')).filter(e=>visible(e)&&e.id?.endsWith(':orgName'));
+ // Isolated fixtures and legacy company tables may expose only the exact link.
+ const sourceLinks=links.length?links:Array.from(scope.querySelectorAll('a')).filter(e=>visible(e)&&norm(e.innerText)===norm(task.name));
+ const clean=s=>String(s).replace(/: Select result.*$/i,'').trim();
+ const tokens=s=>clean(s).toLowerCase().replace(/\b(pty|ltd|limited)\b/g,'').replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+ function score(name){if(norm(name)===norm(task.name))return 1;const a=tokens(name),b=tokens(task.name);if([...a,...b].some(v=>['plaza','centre','center','mall'].includes(v))&&a.sort().join()!=b.sort().join())return 0;return a.filter(v=>b.includes(v)).length/Math.max(a.length,b.length);}
+ const candidates=sourceLinks.map(link=>{const tr=link.closest?.('tr');const row=tr?.innerText||'';const cells=tr?Array.from(tr.querySelectorAll('td')).map(c=>c.innerText):[];const abn=(cells[2]||'').replace(/\D/g,'');return {link,name:clean(link.innerText),row,abn,score:score(clean(link.innerText)),page:pageNumber};}).filter(r=>!(/cancelled|deregistered|former name/i.test(r.row))&&!r.name.includes('*')&&r.score>=0.65&&(!task.abn||!r.abn||r.abn===task.abn));
+ const signature=sourceLinks.map(l=>l.innerText+' '+(l.closest?.('tr')?.innerText||'')).join('|');
+ if(pageWait&&signature===pageSignature&&Date.now()-pageWait<10000)return;
+ pageWait=0;
+ const preferred=candidates.filter(r=>/\bRegistered\b/i.test(r.row));
+ const eligible=preferred.length?preferred:candidates;
+ if(returnPage){const chosen=eligible.find(r=>r.name===selectedName);if(chosen){clicked=true;clickAt=Date.now();clickAttempts++;chosen.link.click();return;}}
+ if(task.abn){const exact=eligible.filter(r=>r.abn===task.abn);if(exact.length===1){selectedName=exact[0].name;clicked=true;clickAt=Date.now();clickAttempts++;exact[0].link.click();return;}}
+ for(const candidate of eligible){if(!seenResults.some(r=>r.name===candidate.name&&r.abn===candidate.abn&&r.row===candidate.row))seenResults.push({...candidate,link:null});}
+ const next=document.querySelector('[id$=":pagingNextButton"]');
+ if(next&&!next.disabled&&next.getAttribute('aria-disabled')!=='true'&&pageNumber<10){pageSignature=signature;pageWait=Date.now();pageNumber++;next.click();return;}
+ const sorted=seenResults.sort((a,b)=>b.score-a.score);
+ const unique=sorted.length===1||(sorted.length>1&&sorted[0].score-sorted[1].score>=0.2);
+ if(unique){const best=sorted[0];selectedName=best.name;if(best.page!==pageNumber){const back=document.querySelector('[id$=":pageButton'+best.page+'"]');if(back){returnPage=best.page;pageNumber=best.page;pageSignature=signature;pageWait=Date.now();back.click();return;}}
+ const chosen=eligible.find(r=>r.name===best.name&&r.abn===best.abn);if(chosen){clicked=true;clickAt=Date.now();clickAttempts++;chosen.link.click();return;}}
+ if(sorted.length>1){await report({error:'多个当前主体仍有歧义；已按状态及预期 ABN 筛选',candidates:sorted});return;}
+ if(Date.now()-started>12000){await report({error:pageNumber>=10?'搜索达到 10 页上限，未找到唯一有效记录':'未找到对应的非 Cancelled 当前名称'});return;}
+
 }
 if(Date.now()-started>5000&&lookupStage===0&&!/Search Results/.test(text)){lookup();return;}
 if(Date.now()-started>110000)await report({error:'页面未返回可识别免费摘要'});
-}catch{ /* Navigation may temporarily disconnect the port. */ }}
+}catch{ /* Navigation may temporarily disconnect the port. */ }finally{busy=false;}}
 chrome.runtime.onMessage.addListener(message=>{if(message.action==='resume'){finished=false;started=Date.now();step();}});
-setInterval(step,1800);step();
+setInterval(step,900);step();

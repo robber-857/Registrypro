@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlencode
 import registration
+from name_matching import similarity, rank_names, words
 
 
 def normalized(text):
@@ -73,12 +74,39 @@ def date_from_asic(html,label,identifier):
     return datetime.strptime(match.group(1),'%d/%m/%Y').date().isoformat() if match else ''
 
 
+def search_candidates(row,refresh=False):
+    from local_leads import fetch,Page
+    numbers=[];candidates=[]
+    # Search both the display name and its conservative brand form.
+    queries=list(dict.fromkeys([row['name'],' '.join(words(row['name'],row.get('address','')))]))
+    for query in queries:
+        if not query:continue
+        url='https://abr.business.gov.au/Search/ResultsActive?'+urlencode({'SearchText':query})
+        h,_,_=fetch(url,refresh,ttl=86400);p=Page();p.feed(h)
+        for href in p.links:
+            match=re.search(r'/ABN/View\?(?:id|abn)=(\d{11})',href,re.I)
+            if match and match.group(1) not in numbers:numbers.append(match.group(1))
+        if len(numbers)>=8:break
+    for number in numbers[:8]:
+        try:
+            source='https://abr.business.gov.au/ABN/View?id='+number
+            detail,_,_=fetch(source,refresh,ttl=86400);info=parse_abr(detail,number)
+            names=rank_names(info,row)
+            score=max([v[0] for v in names]+[similarity(info['legal_name'],row['name'],row.get('address',''))])
+            candidates.append({**{k:info[k] for k in ('legal_name','abn','names','registration_status')},'score':score,'selected_name':names[0][1] if names else '', 'source':source})
+        except Exception:continue
+    return sorted(candidates,key=lambda c:(-c['score'],c['abn']))
+
+
 def investigate(row,refresh=False):
     from local_leads import fetch,Page
     out={k:'' for k,_ in registration.FIELDS}
     out.update(abn='',identity_status='自动未确认',auto_checked_at=datetime.now(timezone.utc).isoformat(),
                date_status='未取得：尚未确认注册主体')
     def finish(reason):
+        if not out.get('auto_candidates') and out['identity_status']!='自动匹配':
+            try:out['auto_candidates']=json.dumps(search_candidates(row,refresh),ensure_ascii=False)
+            except Exception as exc:reason+='；名称搜索失败：'+type(exc).__name__
         out['auto_reason']=reason
         registration.save_auto(registration.key(row),out)
         return registration.apply([row])[0]
@@ -121,32 +149,21 @@ def investigate(row,refresh=False):
             out['auto_candidates']=json.dumps(candidates,ensure_ascii=False)
             return finish('网站出现多个有效 ABN，未自动选择集团或分店主体')
         if not ids:
-            search='https://abr.business.gov.au/Search/ResultsActive?'+urlencode({'SearchText':row['name']})
-            h,_,_=fetch(search,refresh,ttl=3600)
-            p=Page();p.feed(h)
-            numbers=[]
-            for href in p.links:
-                match=re.search(r'/ABN/View\?(?:id|abn)=(\d{11})',href,re.I)
-                if match and match.group(1) not in numbers:numbers.append(match.group(1))
-            for number in numbers[:3]:
-                source='https://abr.business.gov.au/ABN/View?id='+number
-                detail,_,_=fetch(source,refresh,ttl=3600)
-                info=parse_abr(detail,number)
-                candidates.append({k:info[k] for k in ('legal_name','abn','names')})
+            candidates=search_candidates(row,refresh)
             out['auto_candidates']=json.dumps(candidates,ensure_ascii=False)
             return finish(('网站未发现有效 ABN；已保存官方候选，不能仅凭同名确认。' if candidates else '网站未发现有效 ABN；官方搜索未返回可解析候选。')+('部分网站页面读取失败。' if errors else ''))
         abn=next(iter(ids));source='https://abr.business.gov.au/ABN/View?id='+abn
         detail,_,_=fetch(source,refresh,ttl=3600);info=parse_abr(detail,abn)
-        names=[name for name in info['names'] if normalized(name)==normalized(row['name'])]
-        legal_match=normalized(info['legal_name'])==normalized(row['name'])
+        names=[name for score,name in rank_names(info,row) if score>=0.82]
+        legal_match=similarity(info['legal_name'],row['name'],row.get('address',''))>=0.82
         phone=re.sub(r'\D','',row.get('phone',''))
         location=any(re.search(r'\b'+re.escape(row.get('postcode',''))+r'\b',p.text) and len(phone)>=8 and phone[-8:] in re.sub(r'\D','',p.text) for _,p in pages)
         if not (len(names)==1 or legal_match) or not location or not info['registration_status'].startswith('Active'):
             out['auto_candidates']=json.dumps([{k:info[k] for k in ('legal_name','abn','names','registration_status')}],ensure_ascii=False)
-            return finish('已找到官网 ABN 与官方记录，但名称精确对应、门店电话与邮编、或 Active 状态条件未全部满足')
+            return finish('已找到官网 ABN 与官方记录，但名称匹配、门店电话与邮编、或 Active 状态条件未全部满足')
         out.update({k:info[k] for k in ('legal_name','abn','acn','registration_status')})
         out.update(business_name=names[0] if names else '',identity_status='自动匹配',identity_source=source,
-                   identity_checked_at=out['auto_checked_at'],identity_evidence='网站唯一有效 ABN：'+' | '.join(ids[abn])+'；官方当前登记名称精确对应目录名称；网站可见门店电话尾号与邮编一致。规则匹配，不等于法律确认。')
+                   identity_checked_at=out['auto_checked_at'],identity_evidence='网站唯一有效 ABN：'+' | '.join(ids[abn])+'；官方当前登记名称匹配目录名称；网站可见门店电话尾号与邮编一致。规则匹配，不等于法律确认。')
         date_notes=[]
         for field,label,url,identifier,source_field in (
             ('company_next_review_date','Next review date',info['company_link'],info['acn'],'review_source'),

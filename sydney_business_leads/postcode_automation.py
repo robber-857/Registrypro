@@ -18,10 +18,12 @@ DELAYS = (5, 15, 30, 60)
 
 
 def options_checked(options):
-    allowed = {'postcode', 'end_postcode', 'state', 'delay', 'categories', 'refresh', 'include_nearby'}
+    allowed = {'postcode', 'end_postcode', 'state', 'delay', 'categories', 'refresh', 'include_nearby', 'provider', 'use_asic'}
     if not isinstance(options, dict) or set(options) - allowed:
         raise ValueError('不支持的任务参数')
     options = dict(options)
+    options.setdefault('provider','bing')
+    if options['provider'] not in ('google','bing'):raise ValueError('数据源不正确')
     if not isinstance(options.get('postcode'), str) or not isinstance(options.get('end_postcode', ''), str):
         raise ValueError('邮编必须是四位数字文本')
     validate(options.get('postcode'), options.get('state'), 20)
@@ -34,11 +36,14 @@ def options_checked(options):
     cats = options.get('categories')
     if not isinstance(cats, list) or not cats or any(c not in CATEGORIES for c in cats):
         raise ValueError('请选择有效行业')
-    for flag in ('refresh', 'include_nearby'):
+    for flag in ('refresh', 'include_nearby', 'use_asic'):
         if flag in options and not isinstance(options[flag], bool):
             raise ValueError('选项格式不正确')
         options.setdefault(flag, False)
     options['categories'] = list(dict.fromkeys(cats))
+    if options['provider']=='google':
+        from google_places import configured
+        if not configured():raise ValueError('Google Maps 尚未配置 GOOGLE_PLACES_API_KEY；未启动任务，也未回退 Bing。')
     options['end_postcode'] = end
     return options
 
@@ -76,9 +81,10 @@ class Automation:
         return self.thread is not None and self.thread.is_alive()
 
     def _new_postcode(self, postcode):
+        self.data.pop('asic_generation',None);self.data.pop('asic_batch',None)
         self.data.update(postcode=postcode, rows=[], pending=[], seen=[], category_seen=[],
                          category_index=0, page=0, reasons=[], requests=[], batches=0,
-                         next_run_at=None, error='')
+                         next_run_at=None, error='',google_token='')
 
     def start(self, options):
         options = options_checked(options)
@@ -144,9 +150,14 @@ class Automation:
         url = 'https://www.bing.com/maps/overlaybfpr?' + urlencode({
             'q': f'{CATEGORIES[cat]} near {o["state"]} {d["postcode"]} Australia',
             'count': 20, 'first': d['page'] * 20, 'setlang': 'en-US', 'cc': 'AU'})
-        text, source, cached = fetch(url, o['refresh'], ttl=3600)
-        # An unrecognised/empty response is an error, never evidence of zero businesses.
-        items = parse_listings(text)
+        google=o.get('provider')=='google'
+        if google:
+            from google_places import search_page,ENDPOINT
+            items,next_token=search_page(f'{CATEGORIES[cat]} near {o["state"]} {d["postcode"]} Australia',d.get('google_token',''))
+            source,cached=ENDPOINT,False
+        else:
+            text, source, cached = fetch(url, o['refresh'], ttl=3600)
+            items = parse_listings(text)
         with self.lock:
             d['requests'].append({'url': source, 'cached': cached})
             page_seen = set(d['category_seen'])
@@ -173,17 +184,19 @@ class Automation:
                     'state': o['state'], 'address': item['address'], 'website': item.get('website') or '',
                     'phone': item.get('phone') or '', 'email': '', 'contact_page': '', 'observed': '',
                     'opportunity': '', 'status': '仅目录资料，待复核',
-                    'source': 'https://www.bing.com/maps?' + urlencode({'ss': 'ypid.' + ident}) if ident else source,
-                    'contact_source': 'Bing Maps 商家目录（未电话验证）',
+                    'source': item.get('source') or ('https://www.bing.com/maps?' + urlencode({'ss': 'ypid.' + ident}) if ident and not google else source),
+                    'contact_source': ('Google Maps / Places' if google else 'Bing Maps')+' 商家目录（未电话验证）',
                     'checked_at': datetime.now(timezone.utc).isoformat(),
                     'notes': '目录可能过期；服务建议待商家确认。', 'abn': '', 'follow_up': '未联系'})
             d['seen'] = sorted(seen)
             d['category_seen'] = sorted(page_seen)
             d['page'] += 1
-            if new_source == 0 or d['page'] >= MAX_PAGES:
-                d['reasons'].append({'category': cat, 'reason': '无新增目录条目' if new_source == 0 else '达到安全分页上限（可能仍有遗漏）', 'pages': d['page']})
+            if google:d['google_token']=next_token
+            if new_source == 0 or d['page'] >= MAX_PAGES or (google and not next_token):
+                d['reasons'].append({'category': cat, 'reason': 'Google 未返回后续分页令牌' if google and not next_token else ('无新增目录条目' if new_source == 0 else '达到安全分页上限（可能仍有遗漏）'), 'pages': d['page']})
                 d['category_index'] += 1
                 d['page'] = 0
+                d['google_token'] = ''
                 d['category_seen'] = []
             self._delay()
             self._checkpoint()
@@ -219,9 +232,33 @@ class Automation:
                     batch = copy.deepcopy(d['pending'][:20])
                     with self.lock:
                         d['message'] = f"邮编 {d['postcode']} · 第 {d['batches'] + 1} 批 · 核查 {len(batch)} 家商家"
-                    with ThreadPoolExecutor(max_workers=4) as pool:
-                        rows = list(pool.map(lambda row: enrich(row, d['options']['refresh']), batch))
+                    if d.get('asic_batch'):
+                        rows=d['asic_batch']
+                    else:
+                        with ThreadPoolExecutor(max_workers=4) as pool:
+                            rows = list(pool.map(lambda row: enrich(row, d['options']['refresh']), batch))
+                    if d['options'].get('use_asic'):
+                        import browser_registry
+                        previous=browser_registry.snapshot()
+                        if d.get('asic_generation'):
+                            if previous.get('generation')!=d['asic_generation']:raise ValueError('ASIC 队列已被替换；请停止或完成当前队列后重新启动邮编任务')
+                            if previous['state']=='paused':raise ValueError('请先在插件继续 ASIC 队列，再继续邮编任务')
+                        else:
+                            if previous['state'] not in ('idle','done','stopped','error'):raise ValueError('ASIC 队列仍有任务；请先完成或停止后继续邮编任务')
+                            browser_registry.start(rows,refresh=d['options']['refresh'])
+                            d['asic_generation']=browser_registry.snapshot()['generation']
+                            d['asic_batch']=rows
+                            self._checkpoint()
+                        while not self.stop.wait(1):
+                            status=browser_registry.snapshot()
+                            with self.lock:d['message']=f"邮编 {d['postcode']} · ASIC {status['completed']}/{status['total']} · {status['message']}"
+                            if status['state']=='done':break
+                            if status['state'] in ('paused','error','stopped'):raise ValueError('ASIC 队列暂停或中断；已保存浏览器进度')
+                        if self.stop.is_set():
+                            browser_registry.pause('连续邮编任务已暂停')
+                            break
                     with self.lock:
+                        d.pop('asic_generation',None);d.pop('asic_batch',None)
                         d['rows'].extend(rows)
                         del d['pending'][:len(batch)]
                         d['batches'] += 1

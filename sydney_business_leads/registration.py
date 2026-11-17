@@ -17,7 +17,10 @@ FIELDS = [('business_name','Business Name（登记商业名称）'),
           ('identity_evidence','门店与注册主体关联依据'), ('identity_checked_at','注册资料核验时间')]
 FIELDS += [('auto_reason','自动核对结果说明'),('auto_candidates','官方候选（未确认归属）'),
            ('auto_checked_at','自动查询时间'),('date_status','注册日期读取状态')]
-EDITABLE = {k for k,_ in FIELDS} - {'identity_checked_at','auto_reason','auto_candidates','auto_checked_at','date_status'} | {'abn'}
+FIELDS += [('renewal_checked_at','续期日期实际获取时间')]
+FIELDS += [('browser_last_result','浏览器本轮结果'),('browser_checked_at','浏览器本轮时间')]
+FIELDS += [('match_status','第二版匹配状态'),('asic_status','ASIC 状态原文'),('candidate_business_name','候选 Business Name（未确认）'),('candidate_abn','候选 ABN（未确认）'),('candidate_renewal_date','候选续期日（未确认）'),('candidate_source','候选摘要来源'),('related_locations','关联门店来源')]
+EDITABLE = {k for k,_ in FIELDS} - {'identity_checked_at','auto_reason','auto_candidates','auto_checked_at','date_status','match_status','asic_status','candidate_business_name','candidate_abn','candidate_renewal_date','candidate_source','related_locations','browser_last_result','browser_checked_at','renewal_checked_at'} | {'abn'}
 LOCK = threading.RLock()
 PATH = Path(__file__).resolve().parent.parent / 'output' / 'registration_annotations.json'
 
@@ -44,6 +47,33 @@ def save_browser(identifier,data):
         temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(saved,ensure_ascii=False,indent=2),encoding='utf-8')
         temporary.replace(path)
+
+
+def update_browser(identifier, data):
+    with LOCK:
+        path=PATH.with_name('registration_browser.json')
+        saved=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        save_browser(identifier,{**saved.get(identifier,{}),**data})
+
+
+def dedupe(rows):
+    """Only established ABNs merge; candidate identity is never promoted by grouping."""
+    result=[];subjects={}
+    for original in rows:
+        row=dict(original)
+        abn=row.get('abn') if row.get('identity_status') in ('自动匹配','人工核实') else ''
+        location={k:row.get(k,'') for k in ('name','address','source')}
+        if abn and abn in subjects:
+            target=subjects[abn]
+            places=json.loads(target.get('related_locations') or '[]')
+            if location not in places:places.append(location)
+            target['related_locations']=json.dumps(places,ensure_ascii=False)
+            continue
+        if abn:
+            subjects[abn]=row
+            row['related_locations']=json.dumps([location],ensure_ascii=False)
+        result.append(row)
+    return result
 
 
 def save_auto(identifier,data):

@@ -2,6 +2,8 @@
 import json
 import re
 import secrets
+import time
+from name_matching import similarity, rank_names
 import threading
 import html as html_module
 from datetime import datetime,timezone,date
@@ -11,6 +13,35 @@ from auto_registration import parse_abr,normalized,valid_abn
 
 LOCK=threading.RLock()
 STATE={'state':'idle','tasks':[],'message':'插件尚未启动任务','results':[]}
+
+
+def checkpoint():
+    with LOCK:
+        path=registration.PATH.parent/'browser_queue.json'
+        path.parent.mkdir(parents=True,exist_ok=True)
+        temp=path.with_suffix('.tmp')
+        temp.write_text(json.dumps(STATE,ensure_ascii=False,indent=2),encoding='utf-8')
+        temp.replace(path)
+
+
+def export_progress():
+    from local_leads import csv_bytes
+    with LOCK:
+        rows=STATE.get('rows',[])
+        if not rows:return
+        folder=registration.PATH.parent/'asic_runs';folder.mkdir(parents=True,exist_ok=True)
+        name=STATE.get('generation') or 'latest'
+        (folder/(name+'.csv')).write_bytes(csv_bytes(rows))
+        (folder/(name+'.json')).write_text(json.dumps(snapshot(),ensure_ascii=False,indent=2),encoding='utf-8')
+
+
+_saved_queue=registration.PATH.parent/'browser_queue.json'
+if _saved_queue.exists():
+    try:
+        STATE.update(json.loads(_saved_queue.read_text(encoding='utf-8')))
+        if STATE['state'] not in ('done','stopped','idle'):
+            STATE.update(state='paused',message='已恢复浏览器队列；重新配对后继续')
+    except (OSError,ValueError):pass
 
 
 def aliases(name,address=''):
@@ -26,7 +57,7 @@ def aliases(name,address=''):
 
 
 def compatible(name,row):
-    return bool(aliases(name)&aliases(row['name'],row.get('address','')))
+    return bool(aliases(name)&aliases(row['name'],row.get('address',''))) or similarity(name,row['name'],row.get('address','')) >= 0.82
 
 
 def address_key(value):
@@ -92,9 +123,12 @@ def website_address(row,official_address):
     return ''
 
 
-def build(rows,generation=None):
+def build(rows,generation=None,refresh=False,include_company=False):
     from local_leads import fetch
-    tasks=[]
+    tasks=[]; subjects={}; details={}
+    cache_path=registration.PATH.parent/'asic_cache.json'
+    try:cache=json.loads(cache_path.read_text(encoding='utf-8')) if cache_path.exists() else {}
+    except (ValueError,OSError):cache={}
     for row in rows:
         with LOCK:
             if generation is not None and (STATE.get('generation')!=generation or STATE['state']=='stopped'):return
@@ -102,39 +136,67 @@ def build(rows,generation=None):
         known=registration.apply([row])[0]
         candidates=json.loads(known.get('auto_candidates') or '[]')
         if known.get('abn'):candidates.insert(0,{'abn':known['abn']})
-        added=set()
-        def add(kind,url,name,abn='',acn=''):
-            token=(kind,url)
-            if token in added:return
-            added.add(token)
-            tasks.append({'id':secrets.token_hex(12),'row':row,'key':registration.key(row),'kind':kind,
-                          'url':url,'name':name,'abn':abn,'acn':acn,'state':'queued'})
-        for candidate in candidates[:6]:
+        ranked=[]
+        for candidate in candidates[:8]:
             abn=candidate.get('abn','')
             if not valid_abn(abn):continue
             try:
-                html,_,_=fetch('https://abr.business.gov.au/ABN/View?id='+abn,ttl=3600)
-                info=parse_abr(html,abn)
-                for name in info['names']:
-                    if (compatible(name,row) or (len(info['names'])==1 and compatible(info['legal_name'],row))) and info['links'].get(name):add('business',info['links'][name],name,abn)
-                if (compatible(info['legal_name'],row) or known.get('abn')==abn) and info['company_link']:
-                    add('company',info['company_link'],info['legal_name'],abn,info['acn'])
+                if abn not in details:
+                    html,_,_=fetch('https://abr.business.gov.au/ABN/View?id='+abn,ttl=86400)
+                    details[abn]=parse_abr(html,abn)
+                info=details[abn]
+                if not info['registration_status'].startswith('Active'):continue
+                names=rank_names(info,row)
+                if names:
+                    score,name=names[0]
+                    confirmed=known.get('abn')==abn and known.get('identity_status') in ('自动匹配','人工核实')
+                    if confirmed and known.get('business_name') in info['names']:name=known['business_name'];score=1
+                    if score>=0.65 or confirmed:ranked.append((score+int(confirmed),name,abn,info))
             except Exception:continue
+        ranked.sort(key=lambda v:(-v[0],v[1],v[2]))
         query=re.sub(r'[®™]','',row['name']).strip()
-        # A real name search also covers cases where an unrelated website provider ABN was found.
-        add('business','https://connectonline.asic.gov.au/RegistrySearch/faces/landing/panelSearch.jspx?'+urlencode({'searchTab':'bnsearch','searchName':query,'searchNumber':'','searchType':'Bn'}),query)
+        name,abn,info=query,'',{}
+        if ranked:
+            _,name,abn,info=ranked[0]
+        # A ranked ABN is a search constraint, never a confirmed identity.
+        subject=abn or registration.key(row)
+        if subject in subjects:
+            subjects[subject]['related_rows'].append(row)
+            continue
+        url=info.get('links',{}).get(name) or 'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/panelSearch.jspx?'+urlencode({'searchTab':'bnsearch','searchName':name,'searchType':'Bn'})
+        task={'id':secrets.token_hex(12),'row':row,'related_rows':[],'key':registration.key(row),'kind':'business',
+              'url':url,'name':name,'abn':abn,'acn':'','state':'queued','search_only':not bool(abn),
+              'alternatives':[n for score,n in rank_names(info,row) if n!=name and score>=0.65][:2] if info else [],'candidate_abns':list(dict.fromkeys(v[2] for v in ranked)),'created_at':time.time()}
+        subjects[subject]=task;tasks.append(task)
+        cached=cache.get(abn+'|'+normalized(name),{})
+        if not refresh and cached and 0<=time.time()-cached.get('fetched_at',0)<86400:
+            try:
+                outcome=accept(task,cached['payload'],datetime.fromtimestamp(cached['fetched_at'],timezone.utc).isoformat())
+                task.update(state='done',cached=True,cache_outcome=outcome,cache_fetched_at=cached['fetched_at'])
+            except Exception:pass
+        elif not refresh and known.get('business_name')==name and known.get('business_name_renewal_date') and known.get('renewal_checked_at'):
+            try:
+                age=(datetime.now(timezone.utc)-datetime.fromisoformat(known['renewal_checked_at'])).total_seconds()
+                if 0<=age<86400:task.update(state='done',cached=True)
+            except (KeyError,ValueError):pass
+        if include_company and info.get('company_link'):
+            tasks.append({**task,'id':secrets.token_hex(12),'kind':'company','name':info['legal_name'],'acn':info['acn'],'url':info['company_link'],'state':'queued','cached':False})
     with LOCK:
         if generation is not None and (STATE.get('generation')!=generation or STATE['state']=='stopped'):return
-        STATE.update(state='ready',tasks=tasks,message=f'已准备 {len(tasks)} 项浏览器查询',results=[])
+        STATE.update(rows=rows)
+        STATE.update(state='ready',tasks=tasks,message=f'已准备 {len(tasks)} 项查询（默认每主体一个名称）',results=[{'name':t['row']['name'],'message':'24 小时摘要缓存：'+t.get('cache_outcome','已确认日期'), 'fetched_at':t.get('cache_fetched_at'),'cached':True} for t in tasks if t.get('cached')])
+        checkpoint()
 
 
-def start(rows):
+def start(rows,refresh=False,include_company=False):
     with LOCK:
-        if STATE['state'] in ('preparing','ready','running'):raise ValueError('已有浏览器任务，请先停止或完成')
+        if STATE['state'] in ('preparing','ready','running','paused'):raise ValueError('已有浏览器任务，请先停止或完成')
+        STATE.pop('finished_at',None)
         generation=secrets.token_hex(12)
-        STATE.update(state='preparing',tasks=[],results=[],message='准备官方查询链接',generation=generation)
+        STATE.update(state='preparing',tasks=[],results=[],message='准备官方查询链接',generation=generation,started_at=time.time(),rows=rows)
+        checkpoint()
     def run():
-        try:build(rows,generation)
+        try:build(rows,generation,refresh,include_company)
         except Exception as exc:
             with LOCK:
                 if STATE.get('generation')==generation and STATE['state']!='stopped':STATE.update(state='error',message=str(exc))
@@ -144,21 +206,23 @@ def start(rows):
 def snapshot():
     with LOCK:
         return {'state':STATE['state'],'message':STATE['message'],'total':len(STATE['tasks']),
-                'completed':sum(t['state']=='done' for t in STATE['tasks']),'results':list(STATE['results'])}
+                'completed':sum(t['state']=='done' for t in STATE['tasks']),'results':list(STATE['results']),'elapsed_seconds':round(STATE.get('finished_at',time.time())-STATE.get('started_at',time.time()),1),'generation':STATE.get('generation'),'cache_hits':sum(bool(t.get('cached')) for t in STATE['tasks'])}
 
 
 def claim():
     with LOCK:
-        if STATE['state'] in ('idle','preparing','stopped','done','error'):return None
+        if STATE['state'] in ('idle','preparing','stopped','done','error','paused'):return None
         for task in STATE['tasks']:
             if task['state'] in ('queued','running'):
-                task['state']='running';STATE.update(state='running',message='浏览器正在核对：'+task['row']['name'])
-                return {k:v for k,v in task.items() if k!='row'}
-        STATE.update(state='done',message='浏览器任务已完成，结果已写入名单和 CSV')
+                task.setdefault('started_at',time.time());task['state']='running';STATE.update(state='running',message='浏览器正在核对：'+task['row']['name'])
+                checkpoint()
+                return {k:v for k,v in task.items() if k not in ('row','related_rows')}
+        STATE.update(state='done',finished_at=time.time(),message='浏览器任务已完成，结果已写入名单和 CSV')
+        checkpoint();export_progress()
         return None
 
 
-def accept(task,payload):
+def accept(task,payload,checked_at=None):
     from local_leads import fetch
     row=task['row'];current=registration.apply([row])[0]
     if current['identity_status'] in ('人工核实','存在冲突'):return '保留人工核验／冲突记录'
@@ -173,7 +237,7 @@ def accept(task,payload):
         m=re.search(r'(?:^|\n)\s*'+re.escape(label)+r'\s*:\s*([^\n]+)',text,re.I)
         return m.group(1).strip() if m else ''
     name=field('Business name' if kind=='business' else 'Name')
-    if normalized(name)!=normalized(task['name']):raise ValueError('摘要名称与任务不符')
+    if normalized(name)!=normalized(task['name']) and not (task.get('search_only') and compatible(name,row)):raise ValueError('摘要名称与任务不符')
     numbers=re.findall(r'ABN\s*:\s*([\d ]{11,15})',text,re.I)
     abns={re.sub(r'\D','',n) for n in numbers if valid_abn(re.sub(r'\D','',n))}
     if len(abns)!=1:raise ValueError('摘要没有唯一有效 ABN')
@@ -191,7 +255,7 @@ def accept(task,payload):
         if normalized(name) not in {normalized(n) for n in info['names']}:raise ValueError('ABN 当前 Business Names 未列该名称')
         address=field('Principal place of business')
         address_evidence=''
-        name_matches=compatible(name,row) or (len(info['names'])==1 and compatible(info['legal_name'],row))
+        name_matches=compatible(name,row) or any(score>=0.82 and n==name for score,n in rank_names(info,row))
         if name_matches and not same_address(address,row['address']):address_evidence=website_address(row,address)
         matched=matched or (name_matches and (same_address(address,row['address']) or bool(address_evidence)))
         raw=field('Renewal date') or field('Next renewal date');date_field='business_name_renewal_date';source_field='renewal_source'
@@ -201,7 +265,16 @@ def accept(task,payload):
         address=field('Locality of registered office')
         # Company locality alone never establishes a shop relationship.
         raw=field('Next review date');date_field='company_next_review_date';source_field='review_source'
-    if not matched:return '已读取官方摘要；门店关联仍不足，已保存证据但未确认主体'
+    candidate_date=''
+    if raw:
+        try:candidate_date=datetime.strptime(raw,'%d/%m/%Y').date().isoformat()
+        except ValueError:raise ValueError('官方日期格式无法识别')
+    if not matched:
+        if current.get('identity_status') not in ('自动匹配','人工核实'):
+            data={}
+            data.update(candidate_business_name=name,candidate_abn=abn,candidate_renewal_date=candidate_date if kind=='business' else '',candidate_source=url,match_status='高匹配候选',asic_status=field('Status'))
+            registration.save_browser(task['key'],data)
+        return '已读取官方摘要；门店关联仍不足，已保存证据但未确认主体'
     if not raw:raise ValueError('摘要没有对应日期')
     try:value=datetime.strptime(raw,'%d/%m/%Y').date().isoformat()
     except ValueError:raise ValueError('官方日期格式无法识别')
@@ -212,6 +285,9 @@ def accept(task,payload):
                 date_status='已读取浏览器中的 ASIC 日期；其他空白日期尚未取得')
     if kind=='business':
         data['business_name']=name
+        data['asic_status']=field('Status');data['match_status']='自动确认'
+        data['renewal_checked_at']=checked_at or datetime.now(timezone.utc).isoformat()
+        for field_name in ('candidate_business_name','candidate_abn','candidate_renewal_date','candidate_source'):data[field_name]=''
         if not previously_matched:
             data['identity_evidence']='ASIC 名称／唯一对应注册主体与门店名称对应，Principal place of business 地址：'+address+'；'+(address_evidence or '门店目录全地址一致')+'；ABN 当前持有人交叉核对。'+url
     data[date_field]=value;data[source_field]=url
@@ -223,18 +299,69 @@ def result(payload):
     with LOCK:
         task=next((t for t in STATE['tasks'] if t['id']==payload.get('id')),None)
         if not task or task['state']!='running':raise ValueError('任务已过期或尚未领取')
+    payload=dict(payload)
+    if payload.get('screenshot'):
+        from ocr_fallback import extract
+        image=payload.pop('screenshot')
+        try:
+            ocr=extract(image,registration.PATH.parent/'asic_browser_evidence',task['id'])
+            payload.update(text=ocr.pop('text'),ocr=ocr)
+        except ValueError as exc:payload['error']=str(exc)
     evidence={'task':task,'result':payload,'received_at':datetime.now(timezone.utc).isoformat()}
     if payload.get('error'):message='浏览器未完成：'+str(payload['error'])[:300]
     else:
         try:message=accept(task,payload)
-        except ValueError as exc:message='未采纳：'+str(exc)
+        except Exception as exc:message='未采纳：'+type(exc).__name__+' '+str(exc)[:250]
+    if not payload.get('error') and not message.startswith('未采纳') and task['kind']=='business':
+        observed=payload.get('text','')
+        name_match=re.search(r'(?:^|\n)\s*Business name\s*:\s*([^\n]+)',observed,re.I)
+        ids={re.sub(r'\D','',v) for v in re.findall(r'ABN\s*:\s*([\d ]{11,15})',observed,re.I)}
+        ids={v for v in ids if valid_abn(v)}
+        if name_match and len(ids)==1:
+            with LOCK:
+                path=registration.PATH.parent/'asic_cache.json'
+                cache=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+                cache[next(iter(ids))+'|'+normalized(name_match.group(1))]={'fetched_at':time.time(),'payload':payload}
+                path.write_text(json.dumps(cache,ensure_ascii=False,indent=2),encoding='utf-8')
+    current=registration.apply([task['row']])[0]
+    if current.get('identity_status') not in ('人工核实','存在冲突'):
+        status=('自动确认' if current.get('identity_status')=='自动匹配' else
+                '多主体歧义' if '歧义' in message else
+                '访问受限/待重试' if any(v in message for v in ('超时','超过','验证','读取失败','未采纳','未返回')) else
+                '高匹配候选' if current.get('candidate_business_name') else '未找到有效记录')
+        registration.update_browser(task['key'],{'match_status':status,'browser_last_result':message,'browser_checked_at':datetime.now(timezone.utc).isoformat()})
     folder=registration.PATH.parent/'asic_browser_evidence';folder.mkdir(parents=True,exist_ok=True)
     evidence['outcome']=message
     (folder/(task['id']+'.json')).write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
     with LOCK:
-        task['state']='done';STATE['results'].append({'name':task['row']['name'],'message':message})
+        if task.get('alternatives') and any(reason in message for reason in ('没有结果','未找到对应','官方状态不是 Registered')):
+            alternative,*remaining=task['alternatives']
+            if not any(t['abn']==task['abn'] and t['name']==alternative for t in STATE['tasks']):
+                follow={**task,'id':secrets.token_hex(12),'name':alternative,'alternatives':remaining,'state':'queued','url':'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/panelSearch.jspx?'+urlencode({'searchTab':'bnsearch','searchName':alternative,'searchType':'Bn'})}
+                follow.pop('started_at',None)
+                STATE['tasks'].insert(STATE['tasks'].index(task)+1,follow)
+        task['state']='done';STATE['results'].append({'name':task['row']['name'],'message':message,'seconds':round(time.time()-task.get('started_at',time.time()),2),'cached':False,'metrics':payload.get('metrics',{})})
+    checkpoint();export_progress()
     return message
 
 
 def stop():
-    with LOCK:STATE.update(state='stopped',message='浏览器队列已停止；已保存的结果保留')
+    with LOCK:
+        STATE.update(state='stopped',message='浏览器队列已停止；已保存的结果保留')
+        checkpoint();export_progress()
+
+
+def pause(message='插件已暂停'):
+    with LOCK:
+        if STATE['state'] not in ('done','stopped','idle'):
+            STATE.update(state='paused',message=message)
+            checkpoint()
+
+
+def resume():
+    with LOCK:
+        if STATE['state']=='paused':
+            for task in STATE['tasks']:
+                if task['state']=='running':task['started_at']=time.time()
+            STATE.update(state='ready',message='插件继续查询')
+            checkpoint()
