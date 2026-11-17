@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from local_leads import (HERE, CATEGORIES, STATES, CollectionError, validate,
-                         fetch, parse_listings, enrich, csv_bytes, address_matches)
+                         fetch, parse_listings, enrich_registered as enrich, csv_bytes, address_matches)
 
 MAX_PAGES = 5  # Safety cap, not a statement about the provider's coverage.
 DELAYS = (5, 15, 30, 60)

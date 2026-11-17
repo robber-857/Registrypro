@@ -3,6 +3,9 @@ import html
 import io
 import json
 import unittest
+import tempfile
+from pathlib import Path
+import registration
 from unittest.mock import patch
 import local_leads as l
 
@@ -12,6 +15,12 @@ def listing(name='Cafe Test',address='1 Test St, Burwood NSW 2134',website=''):
 
 
 class LocalLeadsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory()
+        self.storage=patch.object(registration,'PATH',Path(self.temp.name)/'annotations.json')
+        self.storage.start()
+    def tearDown(self):
+        self.storage.stop();self.temp.cleanup()
     def test_entity_attribute_decoding(self):
         self.assertEqual(l.parse_listings(listing('A & B'))[0]['title'],'A & B')
     def test_challenge_is_not_empty_success(self):

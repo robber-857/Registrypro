@@ -15,7 +15,9 @@ FIELDS = [('business_name','Business Name（登记商业名称）'),
           ('identity_status','注册名称核验状态'), ('identity_source','名称核验来源'),
           ('renewal_source','续期日期来源'), ('review_source','年度审核日期来源'),
           ('identity_evidence','门店与注册主体关联依据'), ('identity_checked_at','注册资料核验时间')]
-EDITABLE = {k for k,_ in FIELDS} - {'identity_checked_at'} | {'abn'}
+FIELDS += [('auto_reason','自动核对结果说明'),('auto_candidates','官方候选（未确认归属）'),
+           ('auto_checked_at','自动查询时间'),('date_status','注册日期读取状态')]
+EDITABLE = {k for k,_ in FIELDS} - {'identity_checked_at','auto_reason','auto_candidates','auto_checked_at','date_status'} | {'abn'}
 LOCK = threading.RLock()
 PATH = Path(__file__).resolve().parent.parent / 'output' / 'registration_annotations.json'
 
@@ -29,9 +31,25 @@ def load():
     return json.loads(PATH.read_text(encoding='utf-8')) if PATH.exists() else {}
 
 
+def auto_path():
+    return PATH.with_name('registration_auto.json')
+
+
+def save_auto(identifier,data):
+    with LOCK:
+        path=auto_path()
+        saved=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        saved[identifier]=data
+        path.parent.mkdir(parents=True,exist_ok=True)
+        temporary=path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(saved,ensure_ascii=False,indent=2),encoding='utf-8')
+        temporary.replace(path)
+
+
 def apply(rows):
     with LOCK:
         saved = load()
+        automatic=json.loads(auto_path().read_text(encoding='utf-8')) if auto_path().exists() else {}
     result=[]
     for original in rows:
         row=dict(original)
@@ -39,7 +57,10 @@ def apply(rows):
         for field,_ in FIELDS:
             row.setdefault(field, '')
         row['identity_status'] = row.get('identity_status') or '待核实'
-        row.update(saved.get(key(row), {}))
+        row.update(automatic.get(key(row), {}))
+        manual=saved.get(key(row), {})
+        if manual.get('identity_status') in ('人工核实','存在冲突') or any(manual.get(k) for k in ('business_name','legal_name','abn','acn')):
+            row.update(manual)
         row['registration_key'] = key(row)
         result.append(row)
     return result

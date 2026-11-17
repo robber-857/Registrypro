@@ -222,6 +222,11 @@ def enrich(row, refresh=False):
     return row
 
 
+def enrich_registered(row,refresh=False):
+    from auto_registration import investigate
+    return investigate(enrich(row,refresh),refresh)
+
+
 def csv_bytes(rows):
     buf=io.StringIO(newline=''); w=csv.writer(buf)
     w.writerow([v for _,v in FIELDS])
@@ -302,7 +307,7 @@ def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, pro
         raise CollectionError('本次没有取得可用结果。'+ ' / '.join(errors))
     if not cancelled():
         with ThreadPoolExecutor(max_workers=4) as pool:
-            tasks={pool.submit(enrich,r,refresh):i for i,r in enumerate(rows)}
+            tasks={pool.submit(enrich_registered,r,refresh):i for i,r in enumerate(rows)}
             for number,task in enumerate(as_completed(tasks),1):
                 i=tasks[task]; rows[i]=task.result()
                 tell(f'已核查 {number}/{len(rows)} 个网站 · {rows[i]["name"]}',rows)

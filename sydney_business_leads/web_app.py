@@ -13,8 +13,30 @@ from postcode_automation import Automation
 TOKEN=secrets.token_urlsafe(24)
 LOCK=threading.Lock()
 JOB={'state':'idle','message':'准备就绪','rows':[],'metadata':{},'file':''}
+for previous in sorted(OUTPUT.glob('leads_*.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:1]:
+    try:
+        saved=json.loads(previous.read_text(encoding='utf-8'))
+        JOB.update(state='done',message='已恢复最近一次查询',rows=saved['rows'],metadata=saved['metadata'],file=previous.stem)
+    except (OSError,ValueError,KeyError):pass
 CANCEL=threading.Event()
 AUTO=Automation()
+AUDIT={'state':'idle','message':'新查询会自动核对注册资料；已有名单可点击一键核对。','rows':[],'scope':''}
+AUDIT_CANCEL=threading.Event()
+
+
+def audit_worker(rows,scope):
+    from auto_registration import investigate
+    done=[]
+    try:
+        for index,row in enumerate(rows):
+            if AUDIT_CANCEL.is_set():break
+            with LOCK:AUDIT.update(message=f'自动核对 {index+1}/{len(rows)} · {row["name"]}')
+            done.append(investigate(row,refresh=True))
+            with LOCK:AUDIT.update(rows=list(done))
+            if index+1<len(rows) and AUDIT_CANCEL.wait(1):break
+        with LOCK:AUDIT.update(state='done',message=f'自动核对已{"停止" if AUDIT_CANCEL.is_set() else "完成"}：{len(done)} 家，规则匹配 {sum(r.get("identity_status")=="自动匹配" for r in done)} 家。结果和原因已保存。')
+    except Exception as exc:
+        with LOCK:AUDIT.update(state='error',message='自动核对中断：'+str(exc))
 
 
 def reviewed():
@@ -77,6 +99,8 @@ class Handler(BaseHTTPRequestHandler):
             snapshot=AUTO.snapshot()
             snapshot['rows']=registration.apply(snapshot['rows'])
             return self.reply(200,snapshot)
+        if path=='/api/registration/status':
+            with LOCK:return self.reply(200,AUDIT)
         if path.startswith('/download/automation/'):
             name=path.removeprefix('/download/automation/')
             try:
@@ -98,6 +122,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host() or self.headers.get('X-Local-Token')!=TOKEN:
             return self.reply(403,{'error':'请从本机页面操作。'})
+        if self.path=='/api/registration/stop':
+            AUDIT_CANCEL.set();return self.reply(200,{'ok':True})
+        if self.path=='/api/registration/auto':
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 1<=length<=4096:raise ValueError('请求大小不正确')
+                body=json.loads(self.rfile.read(length))
+                if not isinstance(body,dict):raise ValueError('请求格式不正确')
+                scope=body.get('scope')
+                with LOCK:
+                    if JOB['state']=='running' or AUTO.running() or AUDIT['state']=='running':raise ValueError('请等待当前任务结束或先暂停')
+                    if scope=='reviewed':rows=reviewed()
+                    elif scope=='manual':rows=registration.apply(JOB['rows'])
+                    elif scope=='automation':rows=registration.apply(AUTO.snapshot()['rows'])
+                    else:raise ValueError('请选择有效名单')
+                    if body.get('key'):rows=[r for r in rows if r['registration_key']==body['key']]
+                    if not rows:raise ValueError('名单没有可核对的商家')
+                    AUDIT_CANCEL.clear();AUDIT.update(state='running',scope=scope,rows=[],message='开始自动查找注册资料')
+                threading.Thread(target=audit_worker,args=(rows,scope),daemon=True).start()
+                return self.reply(202,{'ok':True})
+            except (ValueError,TypeError) as exc:return self.reply(400,{'error':str(exc)})
         if self.path=='/api/registration':
             try:
                 length=int(self.headers.get('Content-Length','0'))
@@ -112,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 action=self.path.rsplit('/',1)[-1]
                 with LOCK:
-                    if JOB['state']=='running': raise ValueError('请先等待单次查询结束')
+                    if JOB['state']=='running' or AUDIT['state']=='running': raise ValueError('请先等待当前查询结束')
                     if action=='start':
                         length=int(self.headers.get('Content-Length','0'))
                         if not 1<=length<=4096: raise ValueError('请求大小不正确')
@@ -143,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError,TypeError,CollectionError) as e:
             return self.reply(400,{'error':str(e)})
         with LOCK:
-            if JOB['state']=='running' or AUTO.running(): return self.reply(409,{'error':'已有查询正在进行'})
+            if JOB['state']=='running' or AUTO.running() or AUDIT['state']=='running': return self.reply(409,{'error':'已有查询正在进行'})
             CANCEL.clear(); JOB.update(state='running',message='开始搜索',rows=[],metadata={},file='')
         threading.Thread(target=worker,args=(options,),daemon=True).start()
         self.reply(202,{'ok':True})
