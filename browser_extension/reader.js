@@ -9,6 +9,8 @@ function challengeVisible(e){
  for(let p=e;p;p=p.parentElement){const style=getComputedStyle(p);if(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0)return false;}
  return true;
 }
+let seenCancelled=[],ocrObservation=null,ocrKey='',ocrAttempts=0,ocrFailure='';
+async function inspectScreenshot(text){ocrKey=text;ocrAttempts++;const response=await chrome.runtime.sendMessage({action:'ocr-inspect',id:task.id});ocrObservation=response.ocr||null;ocrFailure=response.error||'';}
 let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null,clearSince=null,technicalSince=null;
 async function recoverPage(reason){
  if(recovering)return;recovering=true;
@@ -29,7 +31,7 @@ function lookup(){
  return false;
 }
 async function step(){if(busy||recovering)return;busy=true;try{const response=await chrome.runtime.sendMessage({action:'task',id:task?.id});if(!response.task)return;task=response.task;if(finished)return;
-const main=document.querySelector('main,[role="main"]');const text=(main||document.body)?.innerText||'';
+const main=document.querySelector('main,[role="main"]');let text=(main||document.body)?.innerText||'';const observedText=text;
 if(/verify you are human|captcha|unusual traffic|access denied/i.test(text)||Array.from(document.querySelectorAll('iframe[title]')).some(e=>/recaptcha.*challenge|challenge.*recaptcha/i.test(e.title)&&challengeVisible(e))){
  clearSince=null;
  if(challengeSince===null)challengeSince=Date.now();
@@ -53,6 +55,8 @@ if(/currently experiencing technical difficulties|temporarily unavailable|servic
  return;
 }
 technicalSince=null;
+if(task.screenshot_first&&(/Search Results/.test(text)||text.includes(marker))&&ocrKey!==observedText&&ocrAttempts<3){if(Date.now()-started<2500)return;await inspectScreenshot(observedText);return;}
+if(ocrKey===observedText&&ocrObservation?.page_type==='business_summary'&&ocrObservation.text)text=ocrObservation.text;
 if(text!==lastContent){lastContent=text;changedAt=Date.now();}
 if(!text.trim()&&Date.now()-started>12000){await recoverPage('ASIC 空白页');return;}
 if(Date.now()-changedAt>45000&&!text.includes(marker)){await recoverPage('页面内容 45 秒未推进');return;}
@@ -60,7 +64,7 @@ if(Date.now()-started>110000){const ocr=await chrome.runtime.sendMessage({action
 if(lookupStage===1||lookupStage===2){lookup();return;}
 if(text.includes(marker)){
  const label=task.kind==='business'?'Business name':'Name';const match=text.match(new RegExp('(?:^|\\n)\\s*'+label+'\\s*:\\s*([^\\n]+)','i'));
- if(match&&(norm(match[1])===norm(selectedName||task.name)||(task.allowed_names||[]).includes(norm(match[1])))){await report({text:text.slice(0,150000)});return;}
+ if(match&&(norm(match[1])===norm(selectedName||task.name)||(task.allowed_names||[]).includes(norm(match[1])))){if(/(?:^|\n)\s*Status\s*:\s*(Cancelled|Deregistered)\b/i.test(text)){await report({error:'指定商号已注销（Cancelled），已记录并跳过',text:text.slice(0,150000)});return;}await report({text:text.slice(0,150000)});return;}
  if(Date.now()-started>4000&&lookupStage===0){lookup();return;}
  if(Date.now()-started>20000){if(!match){const ocr=await chrome.runtime.sendMessage({action:'ocr',id:task.id});if(ocr.error)await report({error:'文字读取失败；'+ocr.error});else finished=true;}else await report({error:'摘要名称与指定任务不一致'});return;}
 }
@@ -77,9 +81,11 @@ if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){
  // Isolated fixtures and legacy company tables may expose only the exact link.
  const sourceLinks=links.length?links:Array.from(scope.querySelectorAll('a')).filter(e=>visible(e)&&norm(e.innerText)===norm(task.name));
  const clean=s=>String(s).replace(/: Select result.*$/i,'').trim();
- const tokens=s=>clean(s).toLowerCase().replace(/\b(pty|ltd|limited)\b/g,'').replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+ const tokens=s=>clean(s).toLowerCase().replace(/&/g,' and ').replace(/\b(pty|ltd|limited)\b/g,'').replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
  function score(name){if(norm(name)===norm(task.name))return 1;const a=tokens(name),b=tokens(task.name);if(a.join('')===b.join(''))return 1;if([...a,...b].some(v=>['plaza','centre','center','mall'].includes(v))&&a.sort().join()!=b.sort().join())return 0;return a.filter(v=>b.includes(v)).length/Math.max(a.length,b.length);}
- const candidates=sourceLinks.map(link=>{const tr=link.closest?.('tr');const row=tr?.innerText||'';const cells=tr?Array.from(tr.querySelectorAll('td')).map(c=>c.innerText):[];const abn=(cells[2]||'').replace(/\D/g,'');return {link,name:clean(link.innerText),row,abn,score:score(clean(link.innerText)),page:pageNumber};}).filter(r=>!(/cancelled|deregistered|former name/i.test(r.row))&&!r.name.includes('*')&&r.score>=0.65&&(!task.abn||!r.abn||r.abn===task.abn));
+ const observed=sourceLinks.map(link=>{const tr=link.closest?.('tr');let row=tr?.innerText||'';const visual=ocrKey===observedText?ocrObservation?.rows?.find(r=>norm(r.name)===norm(clean(link.innerText))):null;if(visual)row+=' '+visual.status;const cells=tr?Array.from(tr.querySelectorAll('td')).map(c=>c.innerText):[];const abn=(visual?.abn||cells[2]||'').replace(/\D/g,'');return {link,name:clean(link.innerText),row,abn,score:score(clean(link.innerText)),page:pageNumber};});
+ for(const r of observed.filter(r=>/cancelled|deregistered/i.test(r.row)&&r.score>=0.82)){if(!seenCancelled.some(x=>x.name===r.name&&x.abn===r.abn))seenCancelled.push({name:r.name,abn:r.abn,status:'Cancelled'});}
+ const candidates=observed.filter(r=>!(/cancelled|deregistered|former name/i.test(r.row))&&!r.name.includes('*')&&r.score>=0.65&&(!task.abn||!r.abn||r.abn===task.abn));
  const signature=sourceLinks.map(l=>l.innerText+' '+(l.closest?.('tr')?.innerText||'')).join('|');
  if(pageWait&&signature===pageSignature&&Date.now()-pageWait<10000)return;
  pageWait=0;
@@ -95,11 +101,13 @@ if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){
  if(unique){const best=sorted[0];selectedName=best.name;if(best.page!==pageNumber){const back=document.querySelector('[id$=":pageButton'+best.page+'"]');if(back){returnPage=best.page;pageNumber=best.page;pageSignature=signature;pageWait=Date.now();back.click();return;}}
  const chosen=eligible.find(r=>r.name===best.name&&r.abn===best.abn);if(chosen){clicked=true;clickAt=Date.now();clickAttempts++;chosen.link.click();return;}}
  if(sorted.length>1){await report({error:'多个当前主体仍有歧义；已按状态及预期 ABN 筛选',candidates:sorted});return;}
+ if(!sorted.length&&seenCancelled.length){await report({error:'仅找到已注销（Cancelled）商号，已记录并跳过',candidates:seenCancelled});return;}
+ if(Date.now()-started>12000&&ocrAttempts<1){await inspectScreenshot(observedText);return;}
  if(Date.now()-started>12000){await report({error:pageNumber>=10?'搜索达到 10 页上限，未找到唯一有效记录':'未找到对应的非 Cancelled 当前名称'});return;}
 
 }
 if(Date.now()-started>5000&&lookupStage===0&&!/Search Results/.test(text)){lookup();return;}
 if(Date.now()-started>110000)await report({error:'页面未返回可识别免费摘要'});
-}catch{ /* Navigation may temporarily disconnect the port. */ }finally{busy=false;}}
+}catch(error){try{await chrome.runtime.sendMessage({action:'diagnostic',id:task?.id,reason:'读取阶段 '+lookupStage+'：'+String(error.message||error).slice(0,180)});}catch{} }finally{busy=false;}}
 chrome.runtime.onMessage.addListener(message=>{if(message.action==='resume'){finished=false;started=Date.now();step();}});
 setInterval(step,900);step();

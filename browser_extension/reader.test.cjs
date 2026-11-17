@@ -93,3 +93,15 @@ test('multiple current entities without expected ABN remain ambiguous',async()=>
  const r=await searchFixture([[{name:'SYNTHETIC CAFE',abn:'51 642 681 114',status:'Registered'},{name:'SYNTHETIC CAFE',abn:'99 115 089 033',status:'Registered'}]]);
  assert.equal(r.clicked.length,0);assert.match(r.sent[0].error,/歧义/);
 });
+test('all matching cancelled records are recorded and skipped without a detail click',async()=>{
+ const r=await searchFixture([[{name:'SYNTHETIC CAFE',abn:'Not Available',status:'Cancelled'},{name:'Synthetic Cafe',abn:'Not Available',status:'Cancelled'}]]);
+ assert.equal(r.clicked.length,0);assert.match(r.sent[0].error,/仅找到已注销/);assert.equal(r.sent[0].candidates.length,2);
+});
+test('cancelled matching summary never records an old renewal date',async()=>{
+ const sent=await run('Business Name Summary\nBusiness name: SYNTHETIC CAFE\nStatus: Cancelled\nRenewal date: 12/10/2020');
+ assert.match(sent[0].error,/指定商号已注销/);
+});
+test('cancelled results on an earlier page cannot suppress a current record',async()=>{
+ const r=await searchFixture([[{name:'SYNTHETIC CAFE',abn:'Not Available',status:'Cancelled'}],[{name:'SYNTHETIC CAFE',abn:'99 115 089 033',status:'Registered'}]]);
+ assert.equal(r.clicked.length,1);assert.equal(r.sent.length,0);
+});

@@ -118,6 +118,10 @@ class Handler(BaseHTTPRequestHandler):
             file=HERE.parent/'outputs/burwood/Burwood_20_businesses.xlsx'
             if not file.exists(): return self.reply(404,{'error':'Excel 文件尚未生成'})
             return self.reply(200,file.read_bytes(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','Burwood_20_businesses.xlsx')
+        if path=='/download/renewals.xlsx':
+            from renewal_export import xlsx
+            with LOCK: rows=registration.apply(JOB['rows'])
+            return self.reply(200,xlsx(rows),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','ASIC_renewal_dates.xlsx')
         if path=='/download/latest.csv':
             with LOCK:
                 name=JOB['file']
@@ -137,6 +141,7 @@ class Handler(BaseHTTPRequestHandler):
                     browser_registry.pause(str(body.get('message','插件已暂停'))[:300],reason='verification' if body.get('reason')=='verification' else 'manual');return self.reply(200,{'ok':True})
                 if self.path=='/api/browser/resume':
                     resumed=browser_registry.resume(automatic=body.get('automatic') is True);return self.reply(200,{'ok':True,'resumed':resumed})
+                if self.path=='/api/browser/ocr-inspect':return self.reply(200,browser_registry.inspect_screenshot(body))
                 if self.path=='/api/browser/result':return self.reply(200,{'message':browser_registry.result(body)})
                 if self.path=='/api/browser/stop':
                     browser_registry.stop();return self.reply(200,{'ok':True})

@@ -168,6 +168,7 @@ def build(rows,generation=None,refresh=False,include_company=False):
               'url':url,'name':name,'abn':abn,'acn':'','state':'queued','search_only':not bool(abn),
               'alternatives':[n for score,n in rank_names(info,row) if n!=name and score>=0.65][:2] if info else [],'candidate_abns':list(dict.fromkeys(v[2] for v in ranked)),
               'name_ambiguous':len(ranked)>1 and ranked[0][2]!=ranked[1][2] and ranked[0][0]-ranked[1][0]<0.2,
+              'screenshot_first':__import__('ocr_vision').configuration().get('enabled',False),
               'allowed_names':list(aliases(row['name'],row.get('address',''))|{normalized(name)}),'created_at':time.time()}
         subjects[subject]=task;tasks.append(task)
         cached=cache.get(abn+'|'+normalized(name),{})
@@ -228,6 +229,7 @@ def accept_business_name(task, current, field, abns, url, checked_at):
     """Confirm the requested name/date pair, without claiming shop-owner identity."""
     from local_leads import fetch
     name=field('Business name');raw=field('Renewal date') or field('Next renewal date')
+    if field('Status').casefold() in ('cancelled','deregistered'):return '指定商号已注销（Cancelled），已记录并跳过'
     if field('Status').casefold()!='registered':return '官方状态不是 Registered，未确认商号日期'
     if not raw:raise ValueError('摘要没有 Renewal date')
     try:value=datetime.strptime(raw,'%d/%m/%Y').date().isoformat()
@@ -336,6 +338,20 @@ def accept(task,payload,checked_at=None):
     return '已自动确认并保存日期 '+value
 
 
+def inspect_screenshot(payload):
+    with LOCK:
+        task=next((t for t in STATE['tasks'] if t['id']==payload.get('id')),None)
+        if not task or task['state']!='running':raise ValueError('截图任务已过期')
+    url=urlsplit(payload.get('url',''))
+    if url.scheme!='https' or url.hostname!='connectonline.asic.gov.au':raise ValueError('只能识别 ASIC 官方页')
+    from ocr_fallback import extract
+    folder=registration.PATH.parent/'asic_browser_evidence'
+    identifier=task['id']+'-ocr-'+str(time.time_ns())
+    extracted=extract(payload.get('screenshot'),folder,identifier)
+    (folder/(identifier+'.json')).write_text(json.dumps(extracted,ensure_ascii=False,indent=2),encoding='utf-8')
+    return extracted
+
+
 def result(payload):
     with LOCK:
         task=next((t for t in STATE['tasks'] if t['id']==payload.get('id')),None)
@@ -347,6 +363,11 @@ def result(payload):
         try:
             ocr=extract(image,registration.PATH.parent/'asic_browser_evidence',task['id'])
             payload.update(text=ocr.pop('text'),ocr=ocr)
+            observed=ocr.get('rows',[])
+            matching=[r for r in observed if compatible(r.get('name',''),task['row'])]
+            if ocr.get('page_type')=='results' and matching and all(r.get('status','').casefold()=='cancelled' for r in matching):
+                payload.update(error='截图中匹配商号为 Cancelled；分页范围未核实，保留观察记录',candidates=matching)
+                registration.update_browser(task['key'],{'asic_observed_records':json.dumps(matching,ensure_ascii=False)})
         except ValueError as exc:payload['error']=str(exc)
     evidence={'task':task,'result':payload,'received_at':datetime.now(timezone.utc).isoformat()}
     if payload.get('error'):message='浏览器未完成：'+str(payload['error'])[:300]
@@ -366,7 +387,11 @@ def result(payload):
                 path.write_text(json.dumps(cache,ensure_ascii=False,indent=2),encoding='utf-8')
     current=registration.apply([task['row']])[0]
     if current.get('identity_status') not in ('人工核实','存在冲突'):
-        status=('商号及续期日已确认' if message.startswith('已确认商号及续期日') else
+        cancelled='仅找到已注销' in message or '指定商号已注销' in message
+        if cancelled:
+            registration.update_browser(task['key'],{'asic_status':'Cancelled','auto_reason':message,'asic_observed_records':json.dumps(payload.get('candidates') or [{'text':payload.get('text','')}],ensure_ascii=False)})
+        status=('已注销／跳过' if cancelled else
+                '商号及续期日已确认' if message.startswith('已确认商号及续期日') else
                 'ASIC 技术故障/待重试' if '技术故障' in message else
                 '自动确认' if current.get('identity_status')=='自动匹配' else
                 '多主体歧义' if '歧义' in message else

@@ -17,10 +17,10 @@ FIELDS = [('business_name','Business Name（登记商业名称）'),
           ('identity_evidence','门店与注册主体关联依据'), ('identity_checked_at','注册资料核验时间')]
 FIELDS += [('auto_reason','自动核对结果说明'),('auto_candidates','官方候选（未确认归属）'),
            ('auto_checked_at','自动查询时间'),('date_status','注册日期读取状态')]
-FIELDS += [('renewal_checked_at','续期日期实际获取时间')]
+FIELDS += [('renewal_checked_at','续期日期实际获取时间'),('asic_observed_records','ASIC 本轮观察记录（含注销项）')]
 FIELDS += [('browser_last_result','浏览器本轮结果'),('browser_checked_at','浏览器本轮时间')]
 FIELDS += [('match_status','第二版匹配状态'),('asic_status','ASIC 状态原文'),('candidate_business_name','候选 Business Name（未确认）'),('candidate_abn','候选 ABN（未确认）'),('candidate_renewal_date','候选续期日（未确认）'),('candidate_source','候选摘要来源'),('related_locations','关联门店来源')]
-EDITABLE = {k for k,_ in FIELDS} - {'identity_checked_at','auto_reason','auto_candidates','auto_checked_at','date_status','match_status','asic_status','candidate_business_name','candidate_abn','candidate_renewal_date','candidate_source','related_locations','browser_last_result','browser_checked_at','renewal_checked_at'} | {'abn'}
+EDITABLE = {k for k,_ in FIELDS} - {'asic_observed_records','identity_checked_at','auto_reason','auto_candidates','auto_checked_at','date_status','match_status','asic_status','candidate_business_name','candidate_abn','candidate_renewal_date','candidate_source','related_locations','browser_last_result','browser_checked_at','renewal_checked_at'} | {'abn'}
 LOCK = threading.RLock()
 PATH = Path(__file__).resolve().parent.parent / 'output' / 'registration_annotations.json'
 

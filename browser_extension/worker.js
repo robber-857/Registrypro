@@ -13,7 +13,7 @@ async function recover(s,reason){
  else await chrome.tabs.update(active.tabId,{url:'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx',active:true});
  return {recovering:true};
 }
-async function tick(){if(ticking)return;ticking=true;try{const s=await state();if(!s.running)return;if(s.active){if(Date.now()-s.active.startedAt>180000){await api('/api/browser/result',{id:s.active.task.id,error:'页面等待超过 180 秒，已保留失败原因并继续下一项'});await chrome.storage.session.remove('active');later();}else later();return;}if(Date.now()<(s.nextAt||0)){later(Math.min(s.nextAt-Date.now(),20000));return;}
+async function tick(){if(ticking)return;ticking=true;try{const s=await state();if(!s.running)return;if(s.active){if(Date.now()-s.active.startedAt>140000&&Date.now()-s.active.startedAt<180000&&!s.active.finalOcr){s.active.finalOcr=true;await chrome.storage.session.set({active:s.active});try{const tab=await chrome.tabs.get(s.active.tabId);if(!tab.active||!tab.url?.startsWith('https://connectonline.asic.gov.au/RegistrySearch/')||!await chrome.permissions.contains({permissions:['activeTab']}))throw Error('超时前截图不可用：ASIC 标签未激活或未启用截图权限');const screenshot=await chrome.tabs.captureVisibleTab(tab.windowId,{format:'png'});await api('/api/browser/result',{id:s.active.task.id,url:tab.url,screenshot});await chrome.storage.session.remove('active');later();return;}catch(error){s.active.lastError=String(error.message||error);await chrome.storage.session.set({active:s.active});}}if(Date.now()-s.active.startedAt>180000){await api('/api/browser/result',{id:s.active.task.id,error:'页面等待超过 180 秒；'+(s.active.lastError||'未收到可采纳摘要，可能是页面导航或内容脚本没有完成')+'；自动恢复 '+(s.active.recoveries||0)+' 次，已继续下一项',metrics:{auto_recoveries:s.active.recoveries||0}});await chrome.storage.session.remove('active');later();}else later();return;}if(Date.now()<(s.nextAt||0)){later(Math.min(s.nextAt-Date.now(),20000));return;}
 const {task,status}=await api('/api/browser/next');if(!task){await setMessage(status.message);if(status.state==='paused'){await chrome.storage.session.set({running:false});}else if(['done','idle'].includes(status.state)&&s.config.follow){later(2000);}else if(['done','stopped','error','idle'].includes(status.state))await chrome.storage.session.set({running:false});else later();return;}
 let tabId=s.tabId;let tab;try{tab=tabId?await chrome.tabs.get(tabId):null;}catch{}if(!tab){tab=await chrome.tabs.create({url:'about:blank',active:true});tabId=tab.id;}
 await chrome.storage.session.set({active:{task,tabId,startedAt:Date.now()},tabId,message:'正在查询 '+task.name});await chrome.tabs.update(tabId,{active:true,url:task.url||'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx'});later();
@@ -34,11 +34,13 @@ if(message.action==='verification-cleared'){
 }
 if(!s.running)return {ignored:true};
 if(message.action==='blocked'){await api('/api/browser/pause',{reason:'verification',message:'等待 ASIC 验证结束；正常页面恢复后自动继续'});await chrome.storage.session.set({running:false,pauseReason:'verification',blockedAt:Date.now(),message:'等待 ASIC 验证结束；正常页面恢复后自动继续'});return {ok:true};}
+if(message.action==='diagnostic'){s.active.lastError=message.reason;await chrome.storage.session.set({active:s.active});return {ok:true};}
 if(message.action==='recover')return recover(s,message.reason||'页面无响应');
-if(message.action==='ocr'){
+if(message.action==='ocr'||message.action==='ocr-inspect'){
  const tab=await chrome.tabs.get(sender.tab.id);
  if(!tab.active||!await chrome.permissions.contains({permissions:['activeTab']}))return {error:'OCR 截图权限未启用：在 ASIC 页打开插件，点击启用本次截图 OCR 备用'};
  const screenshot=await chrome.tabs.captureVisibleTab(tab.windowId,{format:'png'});
+ if(message.action==='ocr-inspect')return {ocr:await api('/api/browser/ocr-inspect',{id:message.id,url:sender.url,screenshot})};
  await api('/api/browser/result',{id:message.id,url:sender.url,screenshot});
  await chrome.storage.session.remove('active');await chrome.storage.session.set({nextAt:Date.now()+s.config.delay*1000,message:'已处理本机 OCR 备用结果'});later();return {ok:true};
 }

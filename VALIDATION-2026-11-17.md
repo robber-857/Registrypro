@@ -1,5 +1,13 @@
 # 验证记录
 
+## v2.4 注销记录、可选 OpenAI OCR 和 Excel
+
+- 新增结果列表注销分类、匹配摘要 Cancelled 跳过、可选 OpenAI Responses 图像结构化转录、本机 OCR 列表解析、超时前截图兜底及诊断、真正 XLSX 两张表导出。
+- 103 项 Python、26 项 JS 回归通过。首次 Python 测试因沙箱临时目录权限失败并挂起，确认并停止该测试进程，改用工作区临时目录后通过。
+- 用户给定 Young Accountants 截图本机 RapidOCR 成功识别两行 Cancelled、Not Available，最低字符块置信度约 0.9132；从用户截图复核该商号状态并保存，未声称公司主体已注销。
+- Excel 当前导出 11 家已确认及 9 家其他记录，保留上一轮真实日期数据；这不是 v2.4 新跑 20 家的命中率。
+- OpenAI 未填写模型和密钥；请求格式、禁用状态、缺失配置、未完成响应均为模拟测试，不声称已完成真实 OpenAI 联调。截图范围和权限限制见 docs/OPENAI-OCR.md。
+
 ## v2.3 技术故障分类与商号日期匹配
 
 - 按用户新标准，确认 Business Name 与 Renewal date，地址不作为入库门槛，ABN/ACN 可选。名称歧义仍保留候选；Registered 与可解析续期日期必需。独立的门店持有人身份不会因名称日期匹配而晋升。

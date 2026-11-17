@@ -2,10 +2,25 @@
 import base64
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
 from pathlib import Path
+
+def structure_local(out):
+    text=out.get('text','')
+    query=re.search(r'results? found for\s+["“]([^"”]+)',text,re.I)
+    out['page_type']='results' if query else 'business_summary' if 'Business Name Summary' in text else 'unknown'
+    out['query']=query.group(1) if query else ''
+    out['rows']=[]
+    if query:
+        for line in text.splitlines():
+            match=re.match(r'(.+?)\s+(Not Available|[\d ]{9,15})\s+(Cancelled|Registered|Deregistered)\b',line,re.I)
+            if match:
+                digits=re.sub(r'\D','',match[2])
+                out['rows'].append(dict(name=match[1],status=match[3],abn=digits if len(digits)==11 else '',acn='',renewal_date=''))
+    return out
 
 
 def extract(data_url, folder, identifier):
@@ -22,6 +37,11 @@ def extract(data_url, folder, identifier):
         raise ValueError('OCR 截图尺寸必须在 4096 像素以内')
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     path=folder/(identifier+'.png');path.write_bytes(data)
+    from ocr_vision import extract as vision_extract
+    vision=vision_extract(data_url)
+    if vision is not None:
+        vision['screenshot']=str(path)
+        return vision
     rapid=Path(__file__).with_name('ocr_rapid.py')
     try:
         result=subprocess.run([sys.executable,str(rapid),str(path.resolve())],capture_output=True,timeout=35,env={**os.environ,'PYTHONUTF8':'1'},creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
@@ -29,7 +49,7 @@ def extract(data_url, folder, identifier):
             out=json.loads(result.stdout.decode('utf-8-sig'))
             if out['confidence']<0.8:raise ValueError('OCR 置信度不足，保留截图但不采纳字段')
             out['screenshot']=str(path)
-            return out
+            return structure_local(out)
     except subprocess.TimeoutExpired:
         raise ValueError('本机 OCR 超时，未猜测字段') from None
     command=['powershell.exe','-NoProfile','-Command','-']
@@ -43,4 +63,4 @@ def extract(data_url, folder, identifier):
         raise ValueError('Windows OCR 不可用：'+result.stderr.decode('utf-8',errors='replace')[-400:])
     out=json.loads(result.stdout.decode('utf-8-sig'))
     out['screenshot']=str(path)
-    return out
+    return structure_local(out)
