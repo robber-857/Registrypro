@@ -3,6 +3,7 @@ import json
 import re
 import secrets
 import threading
+import html as html_module
 from datetime import datetime,timezone,date
 from urllib.parse import urlencode,urlsplit
 import registration
@@ -44,12 +45,51 @@ def same_address(a,b):
         for long,short in [('street','st'),('road','rd'),('parade','pde'),('avenue','ave')]:value=re.sub(r'\b'+long+r'\b',short,value)
         street=re.search(r'(?<!\d)(\d+[a-z]?(?:-\d+[a-z]?)?)\s+([a-z ]+?)\s+(st|rd|pde|ave|boulevarde)\b',value)
         postcode=re.search(r'\b(nsw|vic|qld|sa|wa|tas|nt|act)\s+(\d{4})\b',value)
-        unit=re.search(r'\b(?:suite|unit|shop)\s+([a-z0-9]+)',value)
+        unit=re.search(r'\b(?:suite|unit|shop|level)\s+([a-z0-9]+)',value)
         if not unit:unit=re.search(r'\b([a-z0-9]+)\s*/\s*\d+',value)
         if not street or not postcode:return None
+        prefix=value[:street.start()].strip(' ,/')
+        if not unit and prefix:
+            # ASIC sometimes omits the level/unit label; never discard that number.
+            if re.fullmatch(r'[0-9]+[a-z]?',prefix):
+                unit=re.match(r'([a-z0-9]+)',prefix)
+            else:return None
         return (street.group(1),normalized(street.group(2)),street.group(3),postcode.groups(),unit.group(1) if unit else '')
     first,second=parts(a),parts(b)
     return bool(first and second and first==second)
+
+
+def website_address(row,official_address):
+    """Corroborate missing unit details using the shop's own structured contact data."""
+    from local_leads import fetch
+    phone=re.sub(r'\D','',row.get('phone',''))[-9:]
+    if len(phone)!=9:return ''
+    homepage=row.get('website','')
+    url=row.get('contact_page') or homepage
+    if not url or urlsplit(url).hostname!=urlsplit(homepage).hostname:return ''
+    try:
+        source,final_url,_=fetch(url)
+        if (urlsplit(final_url).hostname or '').removeprefix('www.')!=(urlsplit(homepage).hostname or '').removeprefix('www.'):return ''
+        def walk(value):
+            if isinstance(value,dict):
+                address=value.get('address')
+                if isinstance(address,dict) and phone==re.sub(r'\D','',str(value.get('telephone','')))[-9:]:
+                    full=' '.join(str(address.get(k,'')) for k in ('streetAddress','addressLocality','addressRegion','postalCode'))
+                    if same_address(official_address,full):return full
+                for child in value.values():
+                    found=walk(child)
+                    if found:return found
+            elif isinstance(value,list):
+                for child in value:
+                    found=walk(child)
+                    if found:return found
+            return ''
+        for raw in re.findall(r'<script[^>]*type=[\"\']application/ld\+json[\"\'][^>]*>(.*?)</script>',source,re.I|re.S):
+            try:found=walk(json.loads(html_module.unescape(raw)))
+            except (ValueError,TypeError):continue
+            if found:return '官网同一电话对应地址：'+found+'；'+url
+    except Exception:pass
+    return ''
 
 
 def build(rows,generation=None):
@@ -150,7 +190,10 @@ def accept(task,payload):
     if kind=='business':
         if normalized(name) not in {normalized(n) for n in info['names']}:raise ValueError('ABN 当前 Business Names 未列该名称')
         address=field('Principal place of business')
-        matched=matched or ((compatible(name,row) or (len(info['names'])==1 and compatible(info['legal_name'],row))) and same_address(address,row['address']))
+        address_evidence=''
+        name_matches=compatible(name,row) or (len(info['names'])==1 and compatible(info['legal_name'],row))
+        if name_matches and not same_address(address,row['address']):address_evidence=website_address(row,address)
+        matched=matched or (name_matches and (same_address(address,row['address']) or bool(address_evidence)))
         raw=field('Renewal date') or field('Next renewal date');date_field='business_name_renewal_date';source_field='renewal_source'
     else:
         acn=re.sub(r'\D','',field('ACN'))
@@ -170,7 +213,7 @@ def accept(task,payload):
     if kind=='business':
         data['business_name']=name
         if not previously_matched:
-            data['identity_evidence']='ASIC 登记商业名称与门店名称对应，Principal place of business 全地址一致：'+address+'；ABN 当前持有人交叉核对。'+url
+            data['identity_evidence']='ASIC 名称／唯一对应注册主体与门店名称对应，Principal place of business 地址：'+address+'；'+(address_evidence or '门店目录全地址一致')+'；ABN 当前持有人交叉核对。'+url
     data[date_field]=value;data[source_field]=url
     registration.save_browser(task['key'],data)
     return '已自动确认并保存日期 '+value

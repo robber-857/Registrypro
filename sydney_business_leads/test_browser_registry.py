@@ -69,5 +69,17 @@ class BrowserRegistryTests(unittest.TestCase):
     def test_street_ranges_are_not_collapsed(self):
         self.assertFalse(b.same_address('4-8 Rochester St Homebush NSW 2140','4 Rochester St Homebush NSW 2140'))
 
+    def test_unlabelled_unit_cannot_disappear(self):
+        self.assertFalse(b.same_address('1 210A Burwood Rd Burwood NSW 2134','210A Burwood Rd Burwood NSW 2134'))
+        self.assertTrue(b.same_address('1 210A Burwood Rd Burwood NSW 2134','Level 1/210A Burwood Rd Burwood NSW 2134'))
+
+    def test_website_unit_corroboration_requires_same_phone_and_host(self):
+        row={**self.row,'phone':'(02) 8203 8760','website':'https://example.com/','contact_page':'https://example.com/contact'}
+        source='<script type="application/ld+json">{"telephone":"+61 2 8203 8760","address":{"streetAddress":"Level 1/210A Burwood Rd","addressLocality":"Burwood","addressRegion":"NSW","postalCode":"2134"}}</script>'
+        with patch('local_leads.fetch',return_value=(source,row['contact_page'],False)):
+            self.assertIn('Level 1',b.website_address(row,'1 210A Burwood Rd Burwood NSW 2134'))
+            self.assertEqual(b.website_address({**row,'phone':'(02) 8203 8761'},'1 210A Burwood Rd Burwood NSW 2134'),'')
+            self.assertEqual(b.website_address({**row,'contact_page':'https://other.example/contact'},'1 210A Burwood Rd Burwood NSW 2134'),'')
+
 
 if __name__=='__main__':unittest.main()

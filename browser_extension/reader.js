@@ -1,5 +1,5 @@
 // Reads only the assigned public ASIC tab. No payment, login or CAPTCHA interaction.
-let task=null,finished=false,clicked=false,started=Date.now(),lookupStage=0,formWaits=0;
+let task=null,finished=false,clicked=false,started=Date.now(),lookupStage=0,formWaits=0,clickAt=0,clickAttempts=0;
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
 const visible=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
 async function report(result){if(finished)return;finished=true;const response=await chrome.runtime.sendMessage({action:'result',id:task.id,...result});if(response.error){finished=false;}}
@@ -17,6 +17,7 @@ async function step(){try{const response=await chrome.runtime.sendMessage({actio
 const main=document.querySelector('main,[role="main"]');const text=(main||document.body).innerText;
 if(/verify you are human|captcha|unusual traffic|access denied/i.test(text)||Array.from(document.querySelectorAll('iframe[title]')).some(e=>visible(e)&&/recaptcha.*challenge|challenge.*recaptcha/i.test(e.title))){finished=true;await chrome.runtime.sendMessage({action:'blocked',id:task.id});return;}
 const marker=task.kind==='business'?'Business Name Summary':'Company Summary';
+if(Date.now()-started>110000){await report({error:'页面未返回可识别免费摘要'});return;}
 if(lookupStage===1||lookupStage===2){lookup();return;}
 if(text.includes(marker)){
  const label=task.kind==='business'?'Business name':'Name';const match=text.match(new RegExp('(?:^|\\n)\\s*'+label+'\\s*:\\s*([^\\n]+)','i'));
@@ -25,14 +26,15 @@ if(text.includes(marker)){
  if(Date.now()-started>20000){await report({error:'摘要名称与指定任务不一致'});return;}
 }
 if(/0 results found|no results found/i.test(text)){await report({error:'官方名称搜索没有结果'});return;}
-if(!clicked&&/Search Results/.test(text)){
+if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){
+ if(clickAttempts>=3){await report({error:'精确结果链接三次未响应'});return;}
  const links=Array.from((main||document).querySelectorAll('a')).filter(e=>visible(e)&&norm(e.innerText)===norm(task.name));
- if(links.length===1){clicked=true;links[0].click();return;}
+ if(links.length===1){clicked=true;clickAt=Date.now();clickAttempts++;links[0].click();return;}
  if(links.length>1){await report({error:'多个同名结果，未任意选择'});return;}
  if(Date.now()-started>20000){await report({error:'搜索结果没有唯一精确名称；保留候选'});return;}
 }
 if(Date.now()-started>5000&&lookupStage===0&&!/Search Results/.test(text)){lookup();return;}
 if(Date.now()-started>110000)await report({error:'页面未返回可识别免费摘要'});
-}catch{ /* A navigation or service restart may temporarily disconnect the port. */ }}
+}catch{ /* Navigation may temporarily disconnect the port. */ }}
 chrome.runtime.onMessage.addListener(message=>{if(message.action==='resume'){finished=false;started=Date.now();step();}});
 setInterval(step,1800);step();

@@ -5,8 +5,8 @@ async function setMessage(message){await chrome.storage.session.set({message});}
 function later(ms=1500){setTimeout(()=>tick(),ms);}
 async function tick(){if(ticking)return;ticking=true;try{const s=await state();if(!s.running)return;if(s.active){if(Date.now()-s.active.startedAt>120000){await api('/api/browser/result',{id:s.active.task.id,error:'页面等待超过 120 秒'});await chrome.storage.session.remove('active');later();}return;}if(Date.now()<(s.nextAt||0)){later(Math.min(s.nextAt-Date.now(),20000));return;}
 const {task,status}=await api('/api/browser/next');if(!task){await setMessage(status.message);if(['done','stopped','error','idle'].includes(status.state))await chrome.storage.session.set({running:false});else later();return;}
-let tabId=s.tabId;let tab;try{tab=tabId?await chrome.tabs.get(tabId):null;}catch{}if(!tab){tab=await chrome.tabs.create({url:'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx',active:false});tabId=tab.id;}
-await chrome.storage.session.set({active:{task,tabId,startedAt:Date.now()},tabId,message:'正在查询 '+task.name});await chrome.tabs.update(tabId,{url:'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx'});later();
+let tabId=s.tabId;let tab;try{tab=tabId?await chrome.tabs.get(tabId):null;}catch{}if(!tab){tab=await chrome.tabs.create({url:'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx',active:true});tabId=tab.id;}
+await chrome.storage.session.set({active:{task,tabId,startedAt:Date.now()},tabId,message:'正在查询 '+task.name});await chrome.tabs.update(tabId,{active:true,url:'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx'});later();
 }catch(e){await chrome.storage.session.set({running:false,message:'已暂停：'+e.message});}finally{ticking=false;}}
 chrome.alarms.create('registry-tick',{periodInMinutes:0.5});chrome.alarms.onAlarm.addListener(()=>tick());
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{(async()=>{
