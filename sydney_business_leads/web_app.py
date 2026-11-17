@@ -6,7 +6,8 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
-from local_leads import HERE, OUTPUT, CATEGORIES, STATES, collect, csv_bytes, save_run, validate, CollectionError
+from local_leads import HERE, OUTPUT, CATEGORIES, STATES, collect, csv_bytes, annotated_csv, save_run, validate, CollectionError
+import registration
 from postcode_automation import Automation
 
 TOKEN=secrets.token_urlsafe(24)
@@ -20,7 +21,7 @@ def reviewed():
     rows=json.loads((HERE/'burwood_reviewed.json').read_text(encoding='utf-8'))
     for row in rows:
         row.update(requested_postcode='2134',location_scope='目标邮编',contact_source=row['source'],contact_page=row['source'])
-    return rows
+    return registration.apply(rows)
 
 
 def worker(options):
@@ -71,13 +72,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200,{'rows':reviewed(),'metadata':{'status':'reviewed','postcode':'2134','date':'2026-11-17'}})
         if path=='/api/status':
             with LOCK:
-                return self.reply(200,JOB)
+                return self.reply(200,{**JOB,'rows':registration.apply(JOB['rows'])})
         if path=='/api/automation':
-            return self.reply(200,AUTO.snapshot())
+            snapshot=AUTO.snapshot()
+            snapshot['rows']=registration.apply(snapshot['rows'])
+            return self.reply(200,snapshot)
         if path.startswith('/download/automation/'):
             name=path.removeprefix('/download/automation/')
             try:
-                return self.reply(200,AUTO.download(name),'text/csv; charset=utf-8',name)
+                return self.reply(200,annotated_csv(AUTO.download(name)),'text/csv; charset=utf-8',name)
             except (ValueError,OSError):
                 return self.reply(404,{'error':'没有此任务文件'})
         if path=='/download/reviewed.csv':
@@ -90,11 +93,21 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 name=JOB['file']
             if not name: return self.reply(404,{'error':'还没有完成的导出'})
-            return self.reply(200,(OUTPUT/(name+'.csv')).read_bytes(),'text/csv; charset=utf-8',name+'.csv')
+            return self.reply(200,annotated_csv((OUTPUT/(name+'.csv')).read_bytes()),'text/csv; charset=utf-8',name+'.csv')
         self.reply(404,{'error':'Not found'})
     def do_POST(self):
         if not self.valid_host() or self.headers.get('X-Local-Token')!=TOKEN:
             return self.reply(403,{'error':'请从本机页面操作。'})
+        if self.path=='/api/registration':
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 1<=length<=24000: raise ValueError('请求大小不正确')
+                body=json.loads(self.rfile.read(length))
+                if not isinstance(body,dict): raise ValueError('请求格式不正确')
+                data=registration.save(body.get('key'),body.get('values'))
+                return self.reply(200,{'registration':data})
+            except (ValueError,TypeError) as e:
+                return self.reply(400,{'error':str(e)})
         if self.path.startswith('/api/automation/'):
             try:
                 action=self.path.rsplit('/',1)[-1]

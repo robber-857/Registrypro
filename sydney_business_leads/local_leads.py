@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
+import registration
 
 HERE = Path(__file__).resolve().parent
 OUTPUT = HERE.parent / 'output' / 'runs'
@@ -37,6 +38,7 @@ FIELDS = [('name','商家名称'),('category','行业'),('postcode','实际邮�
           ('opportunity','可能需要的服务（待确认）'),('status','核查状态'),
           ('source','目录或原始来源'),('contact_source','联系方式来源'),('checked_at','核查日期'),
           ('notes','备注'),('abn','ABN'),('follow_up','跟进状态')]
+FIELDS += registration.FIELDS
 
 
 class CollectionError(Exception):
@@ -223,7 +225,7 @@ def enrich(row, refresh=False):
 def csv_bytes(rows):
     buf=io.StringIO(newline=''); w=csv.writer(buf)
     w.writerow([v for _,v in FIELDS])
-    for r in rows:
+    for r in registration.apply(rows):
         values=[]
         for key,_ in FIELDS:
             value=str(r.get(key,'') or '')
@@ -232,6 +234,20 @@ def csv_bytes(rows):
             values.append(value)
         w.writerow(values)
     return b'\xef\xbb\xbf'+buf.getvalue().encode('utf-8')
+
+
+def annotated_csv(data):
+    """Download old snapshots with current annotations without rewriting historical files."""
+    mapping={label:key for key,label in FIELDS}
+    rows=[]
+    for original in csv.DictReader(io.StringIO(data.decode('utf-8-sig'))):
+        row={mapping[label]:value for label,value in original.items() if label in mapping}
+        # Undo only this exporter's formula prefix before exporting once more.
+        for key,value in row.items():
+            if value.startswith("'") and (value[1:].lstrip().startswith(('=','+','-','@')) or value[1:].startswith(('\t','\r','\n'))):
+                row[key]=value[1:]
+        rows.append(row)
+    return csv_bytes(rows)
 
 
 def collect(postcode, state='NSW', limit=20, categories=None, refresh=False, progress=None, cancelled=None, include_nearby=True):
