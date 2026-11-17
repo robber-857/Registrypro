@@ -35,6 +35,17 @@ def auto_path():
     return PATH.with_name('registration_auto.json')
 
 
+def save_browser(identifier,data):
+    with LOCK:
+        path=PATH.with_name('registration_browser.json')
+        saved=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        saved[identifier]=data
+        path.parent.mkdir(parents=True,exist_ok=True)
+        temporary=path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(saved,ensure_ascii=False,indent=2),encoding='utf-8')
+        temporary.replace(path)
+
+
 def save_auto(identifier,data):
     with LOCK:
         path=auto_path()
@@ -50,6 +61,8 @@ def apply(rows):
     with LOCK:
         saved = load()
         automatic=json.loads(auto_path().read_text(encoding='utf-8')) if auto_path().exists() else {}
+        browser_path=PATH.with_name('registration_browser.json')
+        browser=json.loads(browser_path.read_text(encoding='utf-8')) if browser_path.exists() else {}
     result=[]
     for original in rows:
         row=dict(original)
@@ -58,6 +71,7 @@ def apply(rows):
             row.setdefault(field, '')
         row['identity_status'] = row.get('identity_status') or '待核实'
         row.update(automatic.get(key(row), {}))
+        row.update(browser.get(key(row), {}))
         manual=saved.get(key(row), {})
         if manual.get('identity_status') in ('人工核实','存在冲突') or any(manual.get(k) for k in ('business_name','legal_name','abn','acn')):
             row.update(manual)

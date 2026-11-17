@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 from local_leads import HERE, OUTPUT, CATEGORIES, STATES, collect, csv_bytes, annotated_csv, save_run, validate, CollectionError
 import registration
+import browser_registry
 from postcode_automation import Automation
 
 TOKEN=secrets.token_urlsafe(24)
@@ -101,6 +102,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200,snapshot)
         if path=='/api/registration/status':
             with LOCK:return self.reply(200,AUDIT)
+        if path=='/api/browser/status':return self.reply(200,browser_registry.snapshot())
+        if path=='/api/browser/next':
+            if self.headers.get('X-Local-Token')!=TOKEN:return self.reply(403,{'error':'配对码已失效，请从本机页面重新复制'})
+            return self.reply(200,{'task':browser_registry.claim(),'status':browser_registry.snapshot()})
         if path.startswith('/download/automation/'):
             name=path.removeprefix('/download/automation/')
             try:
@@ -122,6 +127,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host() or self.headers.get('X-Local-Token')!=TOKEN:
             return self.reply(403,{'error':'请从本机页面操作。'})
+        if self.path.startswith('/api/browser/'):
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 1<=length<=180000:raise ValueError('请求大小不正确')
+                body=json.loads(self.rfile.read(length))
+                if not isinstance(body,dict):raise ValueError('请求格式不正确')
+                if self.path=='/api/browser/result':return self.reply(200,{'message':browser_registry.result(body)})
+                if self.path=='/api/browser/stop':
+                    browser_registry.stop();return self.reply(200,{'ok':True})
+                if self.path=='/api/browser/start':
+                    with LOCK:
+                        if JOB['state']=='running' or AUTO.running() or AUDIT['state']=='running':raise ValueError('请先等待或暂停当前采集任务')
+                        scope=body.get('scope')
+                        if scope=='manual':rows=registration.apply(JOB['rows'])
+                        elif scope=='reviewed':rows=reviewed()
+                        elif scope=='automation':rows=registration.apply(AUTO.snapshot()['rows'])
+                        else:raise ValueError('名单范围不正确')
+                        if not rows:raise ValueError('名单为空')
+                        browser_registry.start(rows)
+                    return self.reply(202,{'ok':True})
+                return self.reply(404,{'error':'Not found'})
+            except (ValueError,TypeError,OSError) as exc:return self.reply(400,{'error':str(exc)})
         if self.path=='/api/registration/stop':
             AUDIT_CANCEL.set();return self.reply(200,{'ok':True})
         if self.path=='/api/registration/auto':
