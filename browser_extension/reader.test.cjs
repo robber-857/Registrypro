@@ -35,6 +35,11 @@ test('stale previous company is never returned as current result',async()=>{cons
 test('paused worker prevents page interaction and results',async()=>{assert.equal((await run('Business Name Summary\nBusiness name: SYNTHETIC CAFE',false)).length,0);});
 test('stale zero-result page is ignored until assigned form search is submitted',async()=>{assert.equal((await run('Search Results\n0 results found')).length,0);});
 test('zero-result label must identify the assigned query',async()=>{assert.equal((await run('Search Results\n0 results found for "OTHER CAFE"')).length,0);assert.match((await run('Search Results\n0 results found for "SYNTHETIC CAFE"'))[0].error,/没有结果/);});
+test('ASIC technical error cannot become a no-match and retries after cooldown',async()=>{
+ const text='Search Results\nWe are currently experiencing technical difficulties. Please try again later.';
+ assert.equal((await run(text,true,14000)).length,0);
+ const sent=await run(text,true,16000);assert.equal(sent[0].action,'recover');assert.match(sent[0].reason,/技术故障/);
+});
 test('persistent verification challenge pauses without interaction',async()=>{const sent=await run('Verify you are human',true,3000);assert.equal(sent[0].action,'blocked');});
 test('initial verification detection holds all actions while confirming visibility',async()=>{assert.equal((await run('Verify you are human')).length,0);});
 

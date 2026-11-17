@@ -3,7 +3,7 @@ import json
 import re
 import secrets
 import time
-from name_matching import similarity, rank_names
+from name_matching import similarity, rank_names, words
 import threading
 import html as html_module
 from datetime import datetime,timezone,date
@@ -154,19 +154,21 @@ def build(rows,generation=None,refresh=False,include_company=False):
                     if score>=0.65 or confirmed:ranked.append((score+int(confirmed),name,abn,info))
             except Exception:continue
         ranked.sort(key=lambda v:(-v[0],v[1],v[2]))
-        query=re.sub(r'[®™]','',row['name']).strip()
+        query=' '.join(words(row['name'],row.get('address',''))) or re.sub(r'[®™]','',row['name']).strip()
         name,abn,info=query,'',{}
         if ranked:
             _,name,abn,info=ranked[0]
         # A ranked ABN is a search constraint, never a confirmed identity.
-        subject=abn or registration.key(row)
+        subject=(abn+'|'+normalized(name)) if abn else registration.key(row)
         if subject in subjects:
             subjects[subject]['related_rows'].append(row)
             continue
         url=info.get('links',{}).get(name) or 'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/panelSearch.jspx?'+urlencode({'searchTab':'bnsearch','searchName':name,'searchType':'Bn'})
         task={'id':secrets.token_hex(12),'row':row,'related_rows':[],'key':registration.key(row),'kind':'business',
               'url':url,'name':name,'abn':abn,'acn':'','state':'queued','search_only':not bool(abn),
-              'alternatives':[n for score,n in rank_names(info,row) if n!=name and score>=0.65][:2] if info else [],'candidate_abns':list(dict.fromkeys(v[2] for v in ranked)),'created_at':time.time()}
+              'alternatives':[n for score,n in rank_names(info,row) if n!=name and score>=0.65][:2] if info else [],'candidate_abns':list(dict.fromkeys(v[2] for v in ranked)),
+              'name_ambiguous':len(ranked)>1 and ranked[0][2]!=ranked[1][2] and ranked[0][0]-ranked[1][0]<0.2,
+              'allowed_names':list(aliases(row['name'],row.get('address',''))|{normalized(name)}),'created_at':time.time()}
         subjects[subject]=task;tasks.append(task)
         cached=cache.get(abn+'|'+normalized(name),{})
         if not refresh and cached and 0<=time.time()-cached.get('fetched_at',0)<86400:
@@ -222,6 +224,44 @@ def claim():
         return None
 
 
+def accept_business_name(task, current, field, abns, url, checked_at):
+    """Confirm the requested name/date pair, without claiming shop-owner identity."""
+    from local_leads import fetch
+    name=field('Business name');raw=field('Renewal date') or field('Next renewal date')
+    if field('Status').casefold()!='registered':return '官方状态不是 Registered，未确认商号日期'
+    if not raw:raise ValueError('摘要没有 Renewal date')
+    try:value=datetime.strptime(raw,'%d/%m/%Y').date().isoformat()
+    except ValueError:raise ValueError('官方日期格式无法识别')
+    abn=next(iter(abns)) if len(abns)==1 else ''
+    info={};note=''
+    if abn:
+        try:
+            html,_,_=fetch('https://abr.business.gov.au/ABN/View?id='+abn,ttl=3600)
+            info=parse_abr(html,abn)
+        except Exception:note='；ABN 补充资料暂未取得'
+    name_matches=compatible(name,task['row']) or (bool(info) and any(score>=0.82 and n==name for score,n in rank_names(info,task['row'])))
+    ambiguous=task.get('name_ambiguous',False)
+    if not name_matches or ambiguous:
+        registration.update_browser(task['key'],dict(candidate_business_name=name,candidate_abn=abn,candidate_renewal_date=value,candidate_source=url,match_status='名称歧义候选' if ambiguous else '名称待核验候选',asic_status=field('Status')))
+        return '已读取官方摘要；名称仍有歧义或匹配不足，保留候选'
+    if current.get('identity_status')=='自动匹配' and current.get('abn') and abn and current['abn']!=abn:
+        return '不同 ABN 与已确认主体冲突，保留原资料及本次证据'
+    address=field('Principal place of business')
+    address_note=('地址一致' if same_address(address,task['row'].get('address','')) else '地址不同或不完整，仅记录，不阻止商号日期确认')
+    data=dict(business_name=name,business_name_renewal_date=value,renewal_source=url,
+        renewal_checked_at=checked_at or datetime.now(timezone.utc).isoformat(),
+        match_status='商号及续期日已确认',asic_status=field('Status'),
+        date_status='已确认 Business Name 与 Renewal date；不代表门店持有人已核实',
+        auto_reason='按商号名称与有效续期日匹配；'+address_note+'；ASIC 地址：'+(address or '未提供')+'；目录地址：'+task['row'].get('address','')+note,
+        candidate_business_name='',candidate_abn='',candidate_renewal_date='',candidate_source='')
+    if abn:data['abn']=abn
+    for key in ('legal_name','acn','registration_status'):
+        if info.get(key):data[key]=info[key]
+    # Keep independent, previously established owner identity; never promote it from name alone.
+    registration.update_browser(task['key'],data)
+    return '已确认商号及续期日 '+value+'；'+address_note
+
+
 def accept(task,payload,checked_at=None):
     from local_leads import fetch
     row=task['row'];current=registration.apply([row])[0]
@@ -240,6 +280,7 @@ def accept(task,payload,checked_at=None):
     if normalized(name)!=normalized(task['name']) and not (task.get('search_only') and compatible(name,row)):raise ValueError('摘要名称与任务不符')
     numbers=re.findall(r'ABN\s*:\s*([\d ]{11,15})',text,re.I)
     abns={re.sub(r'\D','',n) for n in numbers if valid_abn(re.sub(r'\D','',n))}
+    if kind=='business':return accept_business_name(task,current,field,abns,url,checked_at)
     if len(abns)!=1:raise ValueError('摘要没有唯一有效 ABN')
     abn=next(iter(abns))
     if task['abn'] and abn!=task['abn']:raise ValueError('摘要 ABN 与任务不符')
@@ -325,7 +366,9 @@ def result(payload):
                 path.write_text(json.dumps(cache,ensure_ascii=False,indent=2),encoding='utf-8')
     current=registration.apply([task['row']])[0]
     if current.get('identity_status') not in ('人工核实','存在冲突'):
-        status=('自动确认' if current.get('identity_status')=='自动匹配' else
+        status=('商号及续期日已确认' if message.startswith('已确认商号及续期日') else
+                'ASIC 技术故障/待重试' if '技术故障' in message else
+                '自动确认' if current.get('identity_status')=='自动匹配' else
                 '多主体歧义' if '歧义' in message else
                 '访问受限/待重试' if any(v in message for v in ('超时','超过','验证','读取失败','未采纳','未返回')) else
                 '高匹配候选' if current.get('candidate_business_name') else '未找到有效记录')

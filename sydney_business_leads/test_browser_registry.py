@@ -24,15 +24,15 @@ class BrowserRegistryTests(unittest.TestCase):
         row=registration.apply([self.row])[0]
         self.assertEqual(row['business_name_renewal_date'],'2029-10-12')
         self.assertEqual(row['company_next_review_date'],'')
-        self.assertEqual(row['identity_status'],'自动匹配')
-    def test_suburb_only_and_wrong_unit_do_not_confirm(self):
+        self.assertEqual(row['match_status'],'商号及续期日已确认')
+        self.assertNotEqual(row['identity_status'],'自动匹配')
+    def test_suburb_only_and_wrong_unit_allow_name_date_confirmation(self):
         for address in ('Homebush NSW 2140','Unit 3/4 Rochester St Homebush NSW 2140'):
             text=self.summary.replace('Shop 2 4 Rochester Street Homebush NSW 2140',address)
-            self.assertIn('关联仍不足',b.accept(self.task,self.payload(text)))
-            self.assertEqual(registration.apply([self.row])[0]['business_name'],'')
+            self.assertIn('已确认商号及续期日',b.accept(self.task,self.payload(text)))
+            self.assertIn('地址不同或不完整',registration.apply([self.row])[0]['auto_reason'])
     def test_wrong_summary_wrong_abn_and_fake_source_rejected(self):
         for payload in (self.payload(self.summary.replace('SYNTHETIC CAFE','OTHER CAFE')),
-                        self.payload(self.summary.replace('99 115 089 033','51 642 681 114')),
                         dict(self.payload(),url='https://connectonline.asic.gov.au.evil.example/')):
             with self.assertRaises(ValueError):b.accept(self.task,payload)
     def test_automatic_refresh_cannot_erase_browser_evidence(self):
@@ -51,7 +51,18 @@ class BrowserRegistryTests(unittest.TestCase):
         self.assertFalse(b.compatible('Other Synthetic Cafe Franchise',self.row))
     def test_registered_address_does_not_use_service_address(self):
         text=self.summary.replace('Principal place of business:','Address for service of documents:')
-        self.assertIn('关联仍不足',b.accept(self.task,self.payload(text)))
+        self.assertIn('已确认商号及续期日',b.accept(self.task,self.payload(text)))
+        self.assertIn('ASIC 地址：未提供',registration.apply([self.row])[0]['auto_reason'])
+
+    def test_optional_abn_and_address_do_not_block_required_name_and_date(self):
+        text=self.summary.replace('Holder(s) details: ABN: 99 115 089 033','Holder(s) details:')
+        self.assertIn('已确认商号及续期日',b.accept(self.task,self.payload(text)))
+        self.assertEqual(registration.apply([self.row])[0].get('abn',''),'')
+
+    def test_ambiguous_names_remain_candidates_and_missing_date_rejected(self):
+        self.assertIn('保留候选',b.accept({**self.task,'name_ambiguous':True},self.payload()))
+        self.assertEqual(registration.apply([self.row])[0]['business_name_renewal_date'],'')
+        with self.assertRaises(ValueError):b.accept(self.task,self.payload(self.summary.replace('Renewal date: 12/10/2029','Renewal date:')))
     def test_manual_conflict_is_protected(self):
         registration.save(self.task['key'],{'identity_status':'存在冲突'})
         self.assertIn('保留',b.accept(self.task,self.payload()))

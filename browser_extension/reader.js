@@ -9,7 +9,7 @@ function challengeVisible(e){
  for(let p=e;p;p=p.parentElement){const style=getComputedStyle(p);if(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0)return false;}
  return true;
 }
-let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null,clearSince=null;
+let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null,clearSince=null,technicalSince=null;
 async function recoverPage(reason){
  if(recovering)return;recovering=true;
  const response=await chrome.runtime.sendMessage({action:'recover',id:task.id,reason});
@@ -46,6 +46,13 @@ if(response.monitorOnly){
  return;
 }
 clearSince=null;
+// Server errors are not empty search results. Allow a cooldown before bounded recovery.
+if(/currently experiencing technical difficulties|temporarily unavailable|service unavailable|internal server error/i.test(text)){
+ if(technicalSince===null)technicalSince=Date.now();
+ if(Date.now()-technicalSince>=15000)await recoverPage('ASIC 技术故障，待重试');
+ return;
+}
+technicalSince=null;
 if(text!==lastContent){lastContent=text;changedAt=Date.now();}
 if(!text.trim()&&Date.now()-started>12000){await recoverPage('ASIC 空白页');return;}
 if(Date.now()-changedAt>45000&&!text.includes(marker)){await recoverPage('页面内容 45 秒未推进');return;}
@@ -53,7 +60,7 @@ if(Date.now()-started>110000){const ocr=await chrome.runtime.sendMessage({action
 if(lookupStage===1||lookupStage===2){lookup();return;}
 if(text.includes(marker)){
  const label=task.kind==='business'?'Business name':'Name';const match=text.match(new RegExp('(?:^|\\n)\\s*'+label+'\\s*:\\s*([^\\n]+)','i'));
- if(match&&norm(match[1])===norm(selectedName||task.name)){await report({text:text.slice(0,150000)});return;}
+ if(match&&(norm(match[1])===norm(selectedName||task.name)||(task.allowed_names||[]).includes(norm(match[1])))){await report({text:text.slice(0,150000)});return;}
  if(Date.now()-started>4000&&lookupStage===0){lookup();return;}
  if(Date.now()-started>20000){if(!match){const ocr=await chrome.runtime.sendMessage({action:'ocr',id:task.id});if(ocr.error)await report({error:'文字读取失败；'+ocr.error});else finished=true;}else await report({error:'摘要名称与指定任务不一致'});return;}
 }
@@ -71,7 +78,7 @@ if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){
  const sourceLinks=links.length?links:Array.from(scope.querySelectorAll('a')).filter(e=>visible(e)&&norm(e.innerText)===norm(task.name));
  const clean=s=>String(s).replace(/: Select result.*$/i,'').trim();
  const tokens=s=>clean(s).toLowerCase().replace(/\b(pty|ltd|limited)\b/g,'').replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
- function score(name){if(norm(name)===norm(task.name))return 1;const a=tokens(name),b=tokens(task.name);if([...a,...b].some(v=>['plaza','centre','center','mall'].includes(v))&&a.sort().join()!=b.sort().join())return 0;return a.filter(v=>b.includes(v)).length/Math.max(a.length,b.length);}
+ function score(name){if(norm(name)===norm(task.name))return 1;const a=tokens(name),b=tokens(task.name);if(a.join('')===b.join(''))return 1;if([...a,...b].some(v=>['plaza','centre','center','mall'].includes(v))&&a.sort().join()!=b.sort().join())return 0;return a.filter(v=>b.includes(v)).length/Math.max(a.length,b.length);}
  const candidates=sourceLinks.map(link=>{const tr=link.closest?.('tr');const row=tr?.innerText||'';const cells=tr?Array.from(tr.querySelectorAll('td')).map(c=>c.innerText):[];const abn=(cells[2]||'').replace(/\D/g,'');return {link,name:clean(link.innerText),row,abn,score:score(clean(link.innerText)),page:pageNumber};}).filter(r=>!(/cancelled|deregistered|former name/i.test(r.row))&&!r.name.includes('*')&&r.score>=0.65&&(!task.abn||!r.abn||r.abn===task.abn));
  const signature=sourceLinks.map(l=>l.innerText+' '+(l.closest?.('tr')?.innerText||'')).join('|');
  if(pageWait&&signature===pageSignature&&Date.now()-pageWait<10000)return;
