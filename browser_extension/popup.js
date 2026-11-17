@@ -6,4 +6,4 @@ status();setInterval(status,1500);
 
 $('reload').onclick=()=>chrome.runtime.reload();
 
-$('enableocr').onclick=async()=>{const granted=await chrome.permissions.request({permissions:['activeTab']});$('status').textContent=granted?'当前 ASIC 页已启用截图；按本机配置使用本机或 OpenAI OCR':'未授权截图；仍使用页面文字读取';};
+$('enableocr').onclick=async()=>{const granted=await chrome.permissions.request({permissions:['activeTab']});if(granted){const r=await chrome.runtime.sendMessage({action:'use-ocr-tab'});$('status').textContent=r.error||'当前 ASIC 页已启用截图；查询队列将复用此标签页';}else $('status').textContent='未授权截图；仍使用页面文字读取';};

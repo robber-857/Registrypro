@@ -10,14 +10,14 @@ function challengeVisible(e){
  return true;
 }
 let seenCancelled=[],ocrObservation=null,ocrKey='',ocrAttempts=0,ocrFailure='';
-async function inspectScreenshot(text){ocrKey=text;ocrAttempts++;const response=await chrome.runtime.sendMessage({action:'ocr-inspect',id:task.id});ocrObservation=response.ocr||null;ocrFailure=response.error||'';}
+async function inspectScreenshot(text){ocrKey=text;ocrAttempts++;const response=await chrome.runtime.sendMessage({action:'ocr-inspect',id:task.id});ocrObservation=response.ocr||null;ocrFailure=response.error||'';if(ocrFailure)await chrome.runtime.sendMessage({action:'diagnostic',id:task.id,reason:'截图识别失败：'+ocrFailure});}
 let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null,clearSince=null,technicalSince=null;
 async function recoverPage(reason){
  if(recovering)return;recovering=true;
  const response=await chrome.runtime.sendMessage({action:'recover',id:task.id,reason});
  if(response.error){recovering=false;await report({error:reason+'；'+response.error});}
 }
-async function report(result){if(finished)return;finished=true;const response=await chrome.runtime.sendMessage({action:'result',id:task.id,metrics:{result_pages:pageNumber,detail_clicks:clickAttempts},...result});if(response.error){finished=false;}}
+async function report(result){if(finished)return;finished=true;const response=await chrome.runtime.sendMessage({action:'result',id:task.id,metrics:{result_pages:pageNumber,detail_clicks:clickAttempts,ocr_attempts:ocrAttempts,ocr_engine:ocrObservation?.engine||'',ocr_error:ocrFailure},...result});if(response.error){finished=false;}}
 function lookup(){
  const select=document.querySelector('select[id$="templateSearchTypesListOfValuesId::content"]');
  if(!select)return false;
@@ -82,7 +82,7 @@ if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){
  const sourceLinks=links.length?links:Array.from(scope.querySelectorAll('a')).filter(e=>visible(e)&&norm(e.innerText)===norm(task.name));
  const clean=s=>String(s).replace(/: Select result.*$/i,'').trim();
  const tokens=s=>clean(s).toLowerCase().replace(/&/g,' and ').replace(/\b(pty|ltd|limited)\b/g,'').replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
- function score(name){if(norm(name)===norm(task.name))return 1;const a=tokens(name),b=tokens(task.name);if(a.join('')===b.join(''))return 1;if([...a,...b].some(v=>['plaza','centre','center','mall'].includes(v))&&a.sort().join()!=b.sort().join())return 0;return a.filter(v=>b.includes(v)).length/Math.max(a.length,b.length);}
+ function score(name){if(norm(name)===norm(task.name)||(task.allowed_names||[]).includes(norm(name)))return 1;const a=tokens(name),b=tokens(task.name);if(a.join('')===b.join(''))return 1;if([...a,...b].some(v=>['plaza','centre','center','mall'].includes(v))&&a.sort().join()!=b.sort().join())return 0;return a.filter(v=>b.includes(v)).length/Math.max(a.length,b.length);}
  const observed=sourceLinks.map(link=>{const tr=link.closest?.('tr');let row=tr?.innerText||'';const visual=ocrKey===observedText?ocrObservation?.rows?.find(r=>norm(r.name)===norm(clean(link.innerText))):null;if(visual)row+=' '+visual.status;const cells=tr?Array.from(tr.querySelectorAll('td')).map(c=>c.innerText):[];const abn=(visual?.abn||cells[2]||'').replace(/\D/g,'');return {link,name:clean(link.innerText),row,abn,score:score(clean(link.innerText)),page:pageNumber};});
  for(const r of observed.filter(r=>/cancelled|deregistered/i.test(r.row)&&r.score>=0.82)){if(!seenCancelled.some(x=>x.name===r.name&&x.abn===r.abn))seenCancelled.push({name:r.name,abn:r.abn,status:'Cancelled'});}
  const candidates=observed.filter(r=>!(/cancelled|deregistered|former name/i.test(r.row))&&!r.name.includes('*')&&r.score>=0.65&&(!task.abn||!r.abn||r.abn===task.abn));

@@ -3,7 +3,7 @@ function fixture(){
  let handler;let now=1000;const calls=[],timers=[];const data={running:true,config:{token:'fixture',delay:5},active:{task:{id:'one',name:'Synthetic'},tabId:12,startedAt:1000}};
  const context=vm.createContext({Date:{now:()=>now},setTimeout:f=>timers.push(f),fetch:async(url,options)=>{calls.push(['api',url,options]);return {ok:true,json:async()=>({resumed:data.allowResume!==false})};},chrome:{storage:{session:{get:async()=>structuredClone(data),set:async v=>Object.assign(data,v),remove:async key=>delete data[key]}},tabs:{reload:async id=>calls.push(['reload',id]),update:async(id,arg)=>calls.push(['navigate',id,arg])},alarms:{create:()=>{},onAlarm:{addListener:()=>{}}},runtime:{onMessage:{addListener:f=>handler=f}}}});
  vm.runInContext(fs.readFileSync(__dirname+'/worker.js','utf8'),context);
- return {send:m=>new Promise(resolve=>handler(m,{tab:{id:12},url:"https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx"},resolve)),data,calls,timers,context,time:v=>now=v,run:code=>vm.runInContext(code,context)};
+ return {sendPopup:m=>new Promise(resolve=>handler(m,{id:context.chrome.runtime.id},resolve)),send:m=>new Promise(resolve=>handler(m,{tab:{id:12},url:"https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx"},resolve)),data,calls,timers,context,time:v=>now=v,run:code=>vm.runInContext(code,context)};
 }
 test('blank recovery reloads once then uses search entry, without resetting deadline',async()=>{
  const f=fixture();f.time(14000);await f.run("state().then(s=>recover(s,'blank'))");
@@ -30,4 +30,12 @@ test('manual backend pause cannot be overridden by delayed clear message',async(
  const f=fixture();await f.send({action:'blocked',id:'one'});f.data.allowResume=false;
  await f.send({action:'verification-cleared',id:'one'});assert.equal(f.data.running,false);assert.equal(f.data.pauseReason,'manual');
  assert.equal((await f.send({action:'task',id:'one'})).task,null);
+});
+
+test('OCR grant binds only the active ASIC tab while idle',async()=>{
+ const f=fixture();f.context.chrome.tabs.query=async()=>[{id:77,url:'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx'}];
+ assert.match((await f.sendPopup({action:'use-ocr-tab'})).error,/暂停/);
+ f.data.running=false;assert.equal((await f.sendPopup({action:'use-ocr-tab'})).ok,true);assert.equal(f.data.tabId,77);
+ f.context.chrome.tabs.query=async()=>[{id:88,url:'https://example.com/'}];
+ assert.match((await f.sendPopup({action:'use-ocr-tab'})).error,/ASIC/);assert.equal(f.data.tabId,77);
 });

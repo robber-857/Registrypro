@@ -71,12 +71,12 @@ test('unresponsive exact result is retried only three times',async()=>{
  for(const elapsed of [9000,18000,27000]){now=elapsed;await interval();}
  assert.equal(clicks,3);assert.equal(sent.length,1);assert.match(sent[0].error,/三次/);
 });
-async function searchFixture(pages,expectedAbn=''){
+async function searchFixture(pages,expectedAbn='',allowedNames=[]){
  let now=0,interval,page=0;const sent=[],clicked=[];
  const make=(entry,index)=>({id:'table:'+index+':orgName',innerText:entry.name,offsetWidth:10,click:()=>clicked.push(entry),closest:()=>({innerText:entry.name+' '+entry.abn+' '+entry.status,querySelectorAll:()=>[{innerText:''},{innerText:entry.name},{innerText:entry.abn},{innerText:entry.status}]})});
  const main={innerText:'Search Results',querySelectorAll:()=>pages[page].map(make)};
  const next={get disabled(){return page===pages.length-1;},getAttribute:()=>null,click:()=>{page++;}};
- const context=vm.createContext({Date:{now:()=>now},Event:class{},setInterval:f=>{interval=f;},document:{body:main,querySelector:s=>s==='main,[role="main"]'?main:s.includes('pagingNextButton')?next:null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async m=>{if(m.action==='task')return {task:{id:'selection',name:'SYNTHETIC CAFE',kind:'business',abn:expectedAbn}};sent.push(m);return {ok:true};}}}});
+ const context=vm.createContext({Date:{now:()=>now},Event:class{},setInterval:f=>{interval=f;},document:{body:main,querySelector:s=>s==='main,[role="main"]'?main:s.includes('pagingNextButton')?next:null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async m=>{if(m.action==='task')return {task:{id:'selection',name:'SYNTHETIC CAFE',kind:'business',abn:expectedAbn,allowed_names:allowedNames}};sent.push(m);return {ok:true};}}}});
  vm.runInContext(fs.readFileSync(__dirname+'/reader.js','utf8'),context);await new Promise(r=>setImmediate(r));
  for(let i=0;i<4&&!sent.length&&!clicked.length;i++){now+=2000;await interval();}
  return {sent,clicked,page};
@@ -104,4 +104,9 @@ test('cancelled matching summary never records an old renewal date',async()=>{
 test('cancelled results on an earlier page cannot suppress a current record',async()=>{
  const r=await searchFixture([[{name:'SYNTHETIC CAFE',abn:'Not Available',status:'Cancelled'}],[{name:'SYNTHETIC CAFE',abn:'99 115 089 033',status:'Registered'}]]);
  assert.equal(r.clicked.length,1);assert.equal(r.sent.length,0);
+});
+
+test('full original name alias records cancellation despite shortened search query',async()=>{
+ const r=await searchFixture([[{name:'SYNTHETIC CAFE STRATHFIELD',abn:'Not Available',status:'Cancelled'}]],'',['syntheticcafestrathfield']);
+ assert.equal(r.clicked.length,0);assert.match(r.sent[0].error,/仅找到已注销/);
 });
