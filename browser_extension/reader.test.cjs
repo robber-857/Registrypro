@@ -2,19 +2,38 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
-async function run(text,assigned=true){
+async function run(text,assigned=true,elapsed=0){
+ let now=0,interval;
  const sent=[];const task={id:'task1',kind:'business',name:'SYNTHETIC CAFE'};
  const main={innerText:text,querySelectorAll:()=>[]};
- const context=vm.createContext({Date,Event:class{},setInterval:()=>{},document:{getElementById:()=>({textContent:""}),body:main,querySelector:s=>s==='main,[role="main"]'?main:null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async message=>{if(message.action==='task')return {task:assigned?task:null};sent.push(message);return {ok:true};}}}});
+ const context=vm.createContext({Date:{now:()=>now},Event:class{},setInterval:f=>interval=f,document:{getElementById:()=>({textContent:""}),body:main,querySelector:s=>s==='main,[role="main"]'?main:null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async message=>{if(message.action==='task')return {task:assigned?task:null};sent.push(message);return {ok:true};}}}});
  vm.runInContext(fs.readFileSync(__dirname+'/reader.js','utf8'),context);
- await new Promise(resolve=>setImmediate(resolve));return sent;
+ await new Promise(resolve=>setImmediate(resolve));if(elapsed){now=elapsed;await interval();}return sent;
 }
 test('exact assigned summary is returned',async()=>{const sent=await run('Business Name Summary\nBusiness name: SYNTHETIC CAFE\nRenewal date: 12/10/2029');assert.equal(sent.length,1);assert.equal(sent[0].action,'result');});
 test('stale previous company is never returned as current result',async()=>{const sent=await run('Business Name Summary\nBusiness name: DIFFERENT CAFE\nRenewal date: 12/10/2029');assert.equal(sent.length,0);});
 test('paused worker prevents page interaction and results',async()=>{assert.equal((await run('Business Name Summary\nBusiness name: SYNTHETIC CAFE',false)).length,0);});
 test('stale zero-result page is ignored until assigned form search is submitted',async()=>{assert.equal((await run('Search Results\n0 results found')).length,0);});
 test('zero-result label must identify the assigned query',async()=>{assert.equal((await run('Search Results\n0 results found for "OTHER CAFE"')).length,0);assert.match((await run('Search Results\n0 results found for "SYNTHETIC CAFE"'))[0].error,/没有结果/);});
-test('verification challenge pauses without interaction',async()=>{const sent=await run('Verify you are human');assert.equal(sent[0].action,'blocked');});
+test('persistent verification challenge pauses without interaction',async()=>{const sent=await run('Verify you are human',true,3000);assert.equal(sent[0].action,'blocked');});
+test('initial verification detection holds all actions while confirming visibility',async()=>{assert.equal((await run('Verify you are human')).length,0);});
+
+test('blank document requests recovery after twelve seconds',async()=>{
+ let now=0,interval;const sent=[];const main={innerText:'',querySelectorAll:()=>[]};
+ const context=vm.createContext({Date:{now:()=>now},Event:class{},setInterval:f=>interval=f,document:{body:main,querySelector:()=>null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async m=>{if(m.action==='task')return {task:{id:'blank',name:'Synthetic',kind:'business'}};sent.push(m);return {recovering:true};}}}});
+ vm.runInContext(fs.readFileSync(__dirname+'/reader.js','utf8'),context);await new Promise(r=>setImmediate(r));
+ now=13000;await interval();await interval();assert.equal(sent.length,1);assert.equal(sent[0].action,'recover');
+});
+
+test('known ABN is entered in ASIC number field, clearing stale name',async()=>{
+ let interval;const sent=[];const input={value:'',offsetWidth:10,dispatchEvent:()=>{},blur:()=>{}};
+ const other={value:'Old business',dispatchEvent:()=>{}};
+ const select={options:[{textContent:'Business names index',value:'bn'}],dispatchEvent:()=>{}};
+ const main={innerText:'Search ASIC Registers',querySelectorAll:()=>[]};let submits=0;
+ const context=vm.createContext({Date,Event:class{},setInterval:f=>interval=f,document:{body:main,querySelector:s=>s==='main,[role="main"]'?main:s.startsWith('select')?select:s.includes('searchNumber::content')?input:s.includes('searchName::content')?other:s.includes('searchButtonId')?{click:()=>submits++}:null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async m=>{if(m.action==='task')return {task:{id:'number',name:'Synthetic Cafe',kind:'business',abn:'99115089033'}};sent.push(m);return {ok:true};}}}});
+ vm.runInContext(fs.readFileSync(__dirname+'/reader.js','utf8'),context);await new Promise(r=>setImmediate(r));await interval();await interval();
+ assert.equal(input.value,'99115089033');assert.equal(other.value,'');assert.equal(submits,1);
+});
 
 
 test('unresponsive exact result is retried only three times',async()=>{

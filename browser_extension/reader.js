@@ -2,21 +2,37 @@
 let task=null,finished=false,clicked=false,started=Date.now(),lookupStage=0,formWaits=0,clickAt=0,clickAttempts=0,pageNumber=1,pageWait=0,pageSignature="",seenResults=[],returnPage=0,selectedName="",busy=false;
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
 const visible=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
+let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null;
+async function recoverPage(reason){
+ if(recovering)return;recovering=true;
+ const response=await chrome.runtime.sendMessage({action:'recover',id:task.id,reason});
+ if(response.error){recovering=false;await report({error:reason+'；'+response.error});}
+}
 async function report(result){if(finished)return;finished=true;const response=await chrome.runtime.sendMessage({action:'result',id:task.id,metrics:{result_pages:pageNumber,detail_clicks:clickAttempts},...result});if(response.error){finished=false;}}
 function lookup(){
  const select=document.querySelector('select[id$="templateSearchTypesListOfValuesId::content"]');
  if(!select)return false;
  if(lookupStage===0){const option=Array.from(select.options).find(o=>o.textContent.trim()===(task.kind==='business'?'Business names index':'Organisation and Business Names'));if(!option)return false;select.value=option.value;select.dispatchEvent(new Event('change',{bubbles:true}));lookupStage=1;return true;}
- const suffix=task.kind==='business'?'searchName::content':'templateSearchInputText::content';
+ const suffix=task.kind==='business'?(task.abn?'searchNumber::content':'searchName::content'):'templateSearchInputText::content';
  const input=document.querySelector('input[id$="'+suffix+'"]');if(!input||!visible(input)){if(++formWaits===4)document.querySelector('[id="bnConnectionTemplate:pt_s5:searchButtonId"]')?.click();return true;}
- if(lookupStage===1){input.value=task.kind==='company'&&task.acn?task.acn:task.name;input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));input.blur();lookupStage=2;return true;}
+ if(lookupStage===1){
+  if(task.kind==='business'){const other=document.querySelector('input[id$="'+(task.abn?'searchName::content':'searchNumber::content')+'"]');if(other){other.value='';other.dispatchEvent(new Event('change',{bubbles:true}));}}
+  input.value=task.kind==='business'&&task.abn?task.abn:task.kind==='company'&&task.acn?task.acn:task.name;input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));input.blur();lookupStage=2;return true;}
  if(lookupStage===2){document.querySelector('[id="bnConnectionTemplate:pt_s5:searchButtonId"]')?.click();lookupStage=3;started=Date.now();return true;}
  return false;
 }
-async function step(){if(busy)return;busy=true;try{const response=await chrome.runtime.sendMessage({action:'task'});if(!response.task)return;task=response.task;if(finished)return;
-const main=document.querySelector('main,[role="main"]');const text=(main||document.body).innerText;
-if(/verify you are human|captcha|unusual traffic|access denied/i.test(text)||Array.from(document.querySelectorAll('iframe[title]')).some(e=>visible(e)&&/recaptcha.*challenge|challenge.*recaptcha/i.test(e.title))){finished=true;await chrome.runtime.sendMessage({action:'blocked',id:task.id});return;}
+async function step(){if(busy||recovering)return;busy=true;try{const response=await chrome.runtime.sendMessage({action:'task',id:task?.id});if(!response.task)return;task=response.task;if(finished)return;
+const main=document.querySelector('main,[role="main"]');const text=(main||document.body)?.innerText||'';
+if(/verify you are human|captcha|unusual traffic|access denied/i.test(text)||Array.from(document.querySelectorAll('iframe[title]')).some(e=>visible(e)&&/recaptcha.*challenge|challenge.*recaptcha/i.test(e.title))){
+ if(challengeSince===null)challengeSince=Date.now();
+ if(Date.now()-challengeSince>=2500){finished=true;await chrome.runtime.sendMessage({action:'blocked',id:task.id});}
+ return;
+}
+challengeSince=null;
 const marker=task.kind==='business'?'Business Name Summary':'Company Summary';
+if(text!==lastContent){lastContent=text;changedAt=Date.now();}
+if(!text.trim()&&Date.now()-started>12000){await recoverPage('ASIC 空白页');return;}
+if(Date.now()-changedAt>45000&&!text.includes(marker)){await recoverPage('页面内容 45 秒未推进');return;}
 if(Date.now()-started>110000){const ocr=await chrome.runtime.sendMessage({action:'ocr',id:task.id});if(ocr.error)await report({error:'页面未返回可识别免费摘要；'+ocr.error});else finished=true;return;}
 if(lookupStage===1||lookupStage===2){lookup();return;}
 if(text.includes(marker)){
@@ -28,7 +44,7 @@ if(text.includes(marker)){
 // ASIC can retain the previous query body after a URL navigation. Submit the
 // assigned search through its form before accepting any search-list outcome.
 const queryLabel=text.match(/results? found for\s+["“']([^"”']+)["”']/i);
-const queryMatches=!!queryLabel&&norm(queryLabel[1])===norm(task.name);
+const queryMatches=!!queryLabel&&[task.name,task.abn,task.acn].filter(Boolean).some(value=>norm(queryLabel[1])===norm(value));
 if(!text.includes(marker)&&lookupStage===0&&!queryMatches&&lookup())return;
 if(/0 results found|no results found/i.test(text)){if(!queryMatches)return;await report({error:'官方名称搜索没有结果'});return;}
 if(/Search Results/.test(text)&&(!clicked||Date.now()-clickAt>8000)){

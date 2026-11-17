@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Registrypro ASIC Assistant",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "在 ASIC 公共页面运行本机核对队列，读取免费摘要并回写 Registrypro。",
   "permissions": [
     "storage",
@@ -26,7 +26,7 @@
       "js": [
         "reader.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "optional_permissions": [
