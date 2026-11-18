@@ -1,4 +1,5 @@
 """Resumable, bounded public-directory pagination; never claims a complete census."""
+import abr_review
 import copy
 import json
 import re
@@ -18,7 +19,7 @@ DELAYS = (5, 15, 30, 60)
 
 
 def options_checked(options):
-    allowed = {'postcode', 'end_postcode', 'state', 'delay', 'categories', 'refresh', 'include_nearby', 'provider', 'use_asic'}
+    allowed = {'postcode', 'end_postcode', 'state', 'delay', 'categories', 'refresh', 'include_nearby', 'provider', 'use_asic', 'review_names'}
     if not isinstance(options, dict) or set(options) - allowed:
         raise ValueError('不支持的任务参数')
     options = dict(options)
@@ -37,10 +38,12 @@ def options_checked(options):
     cats = options.get('categories')
     if not isinstance(cats, list) or not cats or (options['provider']!='abn' and any(c not in CATEGORIES for c in cats)):
         raise ValueError('请选择有效行业')
-    for flag in ('refresh', 'include_nearby', 'use_asic'):
+    for flag in ('refresh', 'include_nearby', 'use_asic', 'review_names'):
         if flag in options and not isinstance(options[flag], bool):
             raise ValueError('选项格式不正确')
         options.setdefault(flag, False)
+    if options['review_names'] and (options['provider']!='abn' or not abr_review.configured_guid()):
+        raise ValueError('每批商号复核需要 ABN 官方数据来源及已配置的 ABR_GUID')
     options['categories'] = list(dict.fromkeys(cats))
     if options['provider']=='google':
         from google_places import configured
@@ -76,13 +79,13 @@ class Automation:
     def snapshot(self):
         with self.lock:
             return copy.deepcopy({k: v for k, v in self.data.items()
-                                  if k not in ('pending', 'seen', 'category_seen')})
+                                  if k not in ('pending', 'seen', 'category_seen', 'reviewed_batch')})
 
     def running(self):
         return self.thread is not None and self.thread.is_alive()
 
     def _new_postcode(self, postcode):
-        self.data.pop('asic_generation',None);self.data.pop('asic_batch',None)
+        self.data.pop('reviewed_batch',None);self.data.pop('asic_generation',None);self.data.pop('asic_batch',None)
         self.data.update(postcode=postcode, rows=[], pending=[], seen=[], category_seen=[],
                          category_index=0, page=0, reasons=[], requests=[], batches=0,
                          next_run_at=None, error='',google_token='')
@@ -234,6 +237,10 @@ class Automation:
             self._new_postcode(f"{int(d['postcode']) + 1:04d}")
             self._delay()
 
+    def _review_progress(self, message):
+        with self.lock:
+            self.data['message'] = f"邮编 {self.data['postcode']} · 第 {self.data['batches']+1} 批 · {message}"
+
     def _run(self):
         try:
             while not self.stop.is_set() and self.data['state'] == 'running':
@@ -249,6 +256,21 @@ class Automation:
                         rows=d['asic_batch']
                     elif d['options'].get('provider')=='abn':
                         rows=batch
+                        if d['options'].get('review_names'):
+                            if 'reviewed_batch' in d:
+                                rows=d['reviewed_batch']
+                            else:
+                                targets=abr_review.missing_abns(rows)
+                                summary='本批无缺失商号'
+                                if targets:
+                                    guid=abr_review.configured_guid()
+                                    if not guid: raise ValueError('请配置本机 ABR_GUID 后继续')
+                                    rows,summary=abr_review.review(rows, targets, guid, self.stop.is_set, self._review_progress)
+                                with self.lock:
+                                    d['reviewed_batch']=rows
+                                    d['requests'].append({'source':'ABN Lookup API','batch':d['batches']+1,'summary':summary})
+                                    self._checkpoint()
+                            if self.stop.is_set(): break
                     else:
                         with ThreadPoolExecutor(max_workers=4) as pool:
                             rows = list(pool.map(lambda row: enrich(row, d['options']['refresh']), batch))
@@ -274,7 +296,7 @@ class Automation:
                             browser_registry.pause('连续邮编任务已暂停')
                             break
                     with self.lock:
-                        d.pop('asic_generation',None);d.pop('asic_batch',None)
+                        d.pop('reviewed_batch',None);d.pop('asic_generation',None);d.pop('asic_batch',None)
                         d['rows'].extend(rows)
                         del d['pending'][:len(batch)]
                         d['batches'] += 1

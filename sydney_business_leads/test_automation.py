@@ -41,6 +41,29 @@ class AutomationTests(unittest.TestCase):
             p.stop()
         self.temp.cleanup()
 
+    def test_missing_names_review_feeds_each_asic_batch_and_export(self):
+        rows = [{'name': f'Company {i}', 'abn': str(i), 'source_provider':'abn_bulk',
+                 'business_name':'Known' if i==0 else ''} for i in range(21)]
+        def page(postcode,state,limit,offset):
+            return rows[offset:offset+limit], {'offset':offset,'next_offset':min(offset+limit,21),
+                                                'has_more':offset+limit<21,'snapshot':'sample'}
+        def lookup(abn):
+            return {'status':'Active','business_names':['First','Second'] if abn=='20' else [],
+                    'retrieved_at':'2026-11-18'}
+        done={'state':'done','generation':'sample','total':1,'completed':1,'message':'done'}
+        with patch('abn_bulk.query',side_effect=page), patch('abr_review.configured_guid',return_value='fixture'), \
+             patch('abr_review.ApiClient') as client, patch('browser_registry.snapshot',return_value=done), \
+             patch('browser_registry.start') as start:
+            client.return_value.__enter__.return_value.lookup.side_effect=lookup
+            self.manager.start({**options(),'end_postcode':'2134','provider':'abn','use_asic':True,'review_names':True})
+            self.join()
+            self.assertEqual(self.manager.data['state'],'done')
+            self.assertEqual(client.return_value.__enter__.return_value.lookup.call_count,20)
+            self.assertEqual(start.call_count,2)
+            self.assertEqual([r['business_name'] for r in start.call_args.args[0]],['First','Second'])
+            self.assertEqual(len(self.manager.data['rows']),22)
+            self.assertIn('Second',self.manager.download(self.manager.data['history'][0]['file']).decode('utf-8-sig'))
+
     def join(self, manager=None):
         manager = manager or self.manager
         manager.thread.join(5)

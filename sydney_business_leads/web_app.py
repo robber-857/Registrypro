@@ -1,4 +1,5 @@
 """Loopback-only research UI. No credentials, external writes or outbound mail."""
+import abr_review
 import argparse
 import json
 import secrets
@@ -66,6 +67,23 @@ def worker(options):
             JOB.update(state='error',message=str(e),metadata=metadata,file=file)
 
 
+def verify_missing_names(rows, metadata, targets, guid):
+    from lead_common import LeadError
+    try:
+        def progress(message):
+            with LOCK: JOB['message'] = message
+        updated, message = abr_review.review(rows, targets, guid, CANCEL.is_set, progress)
+        metadata = {**metadata, 'returned': len(updated), 'abr_review': message}
+        filename = save_run(updated, metadata)
+        with LOCK: JOB.update(state='done', message=message, rows=updated, metadata=metadata, file=filename)
+    except InterruptedError:
+        with LOCK: JOB.update(state='done', message='已取消商号复核，原名单已保留')
+    except (LeadError, OSError, ValueError) as exc:
+        with LOCK: JOB.update(state='error', message='商号复核失败，原名单已保留：'+str(exc).replace(guid,'***'))
+    except Exception:
+        with LOCK: JOB.update(state='error', message='商号复核中断，原名单已保留')
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):
         pass
@@ -131,6 +149,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host() or self.headers.get('X-Local-Token')!=TOKEN:
             return self.reply(403,{'error':'请从本机页面操作。'})
+        if self.path=='/api/verify-missing-names':
+            guid = abr_review.configured_guid()
+            if not guid: return self.reply(400,{'error':'请先配置本机 ABR_GUID'})
+            with LOCK:
+                if JOB['state']=='running' or AUTO.running() or AUDIT['state']=='running' or browser_registry.snapshot()['state'] not in ('done','stopped','idle','error'):
+                    return self.reply(409,{'error':'请等待当前任务完成'})
+                rows = list(JOB['rows'])
+                targets = abr_review.missing_abns(rows)
+                if not targets: return self.reply(400,{'error':'最近一次 ABN 名单没有待复核的空商号'})
+                CANCEL.clear()
+                JOB.update(state='running', message='准备复核缺失商号')
+                threading.Thread(target=verify_missing_names,args=(rows,JOB['metadata'],targets,guid),daemon=True).start()
+            return self.reply(202,{'ok':True})
         if self.path.startswith('/api/browser/'):
             try:
                 length=int(self.headers.get('Content-Length','0'))
