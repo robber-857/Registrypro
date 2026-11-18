@@ -90,7 +90,7 @@ def query(postcode,state,limit=20,offset=0,db_path=None):
             rows.append({'name':name or e['legal_name'],'business_name':name,'legal_name':e['legal_name'],'abn':e['abn'],'acn':company_acn(e),
             'asic_number':e.get('asic_number',''),'asic_number_type':e.get('asic_number_type',''),'category':e['entity_type'],'state':state,'postcode':postcode,'requested_postcode':postcode,'location_scope':'ABN主要经营地点邮编',
             'address':state+' '+postcode+' · ABN '+e['abn'],'website':'','phone':'','email':'','contact_page':'','observed':'官方公开数据未提供网站和电话','opportunity':'',
-            'status':'Active ABN（官方快照）','registration_status':'Active from '+e['status_from'],'identity_status':'官方登记数据','identity_source':SOURCE,
+            'status':'Active ABN（官方快照）','registration_status':'Active from '+(e['status_from'][:4]+'-'+e['status_from'][4:6]+'-'+e['status_from'][6:] if len(e['status_from'])==8 and e['status_from'].isdigit() else e['status_from']),'identity_status':'官方登记数据','identity_source':SOURCE,
             'source':'https://abr.business.gov.au/ABN/View?id='+e['abn'],'contact_source':SOURCE,'source_provider':'abn_bulk','abn_snapshot_at':'; '.join(meta.get('extract_times',[])),
             'checked_at':meta.get('built_at',''),'notes':('ACN 依据：官方 ASIC 编号、澳大利亚公司类型及校验位。' if company_acn(e) and not e.get('acn') else '')+'按主要经营地点筛选，不代表全部门店；ABN Active 不等于商号 Registered。'+('' if name else '未提供 Business Name，无法直接查商号续期日。'),
             'follow_up':'未联系'})

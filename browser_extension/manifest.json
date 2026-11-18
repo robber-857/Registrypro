@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Registrypro ASIC Assistant",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "在 ASIC 公共页面运行本机核对队列，读取免费摘要并回写 Registrypro。",
   "permissions": [
     "storage",
-    "alarms"
+    "alarms",
+    "cookies"
   ],
   "host_permissions": [
-    "https://connectonline.asic.gov.au/*",
+    "*://connectonline.asic.gov.au/*",
     "http://127.0.0.1/*"
   ],
   "background": {

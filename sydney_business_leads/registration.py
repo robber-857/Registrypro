@@ -17,10 +17,11 @@ FIELDS = [('business_name','Business Name（登记商业名称）'),
           ('identity_evidence','门店与注册主体关联依据'), ('identity_checked_at','注册资料核验时间')]
 FIELDS += [('auto_reason','自动核对结果说明'),('auto_candidates','官方候选（未确认归属）'),
            ('auto_checked_at','自动查询时间'),('date_status','注册日期读取状态')]
+FIELDS += [('renewal_date_notice','续期日期提示（按本机日期）')]
 FIELDS += [('renewal_checked_at','续期日期实际获取时间'),('asic_observed_records','ASIC 本轮观察记录（含注销项）')]
 FIELDS += [('browser_last_result','浏览器本轮结果'),('browser_checked_at','浏览器本轮时间')]
 FIELDS += [('match_status','第二版匹配状态'),('asic_status','ASIC 状态原文'),('candidate_business_name','候选 Business Name（未确认）'),('candidate_abn','候选 ABN（未确认）'),('candidate_renewal_date','候选续期日（未确认）'),('candidate_source','候选摘要来源'),('related_locations','关联门店来源')]
-EDITABLE = {k for k,_ in FIELDS} - {'asic_observed_records','identity_checked_at','auto_reason','auto_candidates','auto_checked_at','date_status','match_status','asic_status','candidate_business_name','candidate_abn','candidate_renewal_date','candidate_source','related_locations','browser_last_result','browser_checked_at','renewal_checked_at'} | {'abn'}
+EDITABLE = {k for k,_ in FIELDS} - {'renewal_date_notice','asic_observed_records','identity_checked_at','auto_reason','auto_candidates','auto_checked_at','date_status','match_status','asic_status','candidate_business_name','candidate_abn','candidate_renewal_date','candidate_source','related_locations','browser_last_result','browser_checked_at','renewal_checked_at'} | {'abn'}
 LOCK = threading.RLock()
 PATH = Path(__file__).resolve().parent.parent / 'output' / 'registration_annotations.json'
 
@@ -87,6 +88,18 @@ def save_auto(identifier,data):
         temporary.replace(path)
 
 
+def renewal_notice(row, today=None):
+    raw=row.get('business_name_renewal_date','')
+    if not raw:return '未取得续期日期'
+    try: value=date.fromisoformat(raw)
+    except (ValueError, TypeError):return '日期格式待核对'
+    if today is None:
+        today=date.today()
+    if value<today:return '日期已过；保留 ASIC 原文，不代表已注销或已续期'
+    if value==today:return '日期为今天；仅表示 ASIC 返回日期'
+    return '日期在未来；仅表示 ASIC 返回日期，不证明门店主体身份'
+
+
 def apply(rows):
     with LOCK:
         saved = load()
@@ -105,6 +118,7 @@ def apply(rows):
         manual=saved.get(key(row), {})
         if manual.get('identity_status') in ('人工核实','存在冲突') or any(manual.get(k) for k in ('business_name','legal_name','abn','acn')):
             row.update(manual)
+        row['renewal_date_notice'] = renewal_notice(row)
         row['registration_key'] = key(row)
         result.append(row)
     return result

@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 function fixture(){
  let handler;let now=1000;const calls=[],timers=[];const data={running:true,config:{token:'fixture',delay:5},active:{task:{id:'one',name:'Synthetic'},tabId:12,startedAt:1000}};
- const context=vm.createContext({Date:{now:()=>now},setTimeout:f=>timers.push(f),fetch:async(url,options)=>{calls.push(['api',url,options]);return {ok:true,json:async()=>({resumed:data.allowResume!==false})};},chrome:{storage:{session:{get:async()=>structuredClone(data),set:async v=>Object.assign(data,v),remove:async key=>delete data[key]}},tabs:{reload:async id=>calls.push(['reload',id]),update:async(id,arg)=>calls.push(['navigate',id,arg])},alarms:{create:()=>{},onAlarm:{addListener:()=>{}}},runtime:{onMessage:{addListener:f=>handler=f}}}});
+ const context=vm.createContext({Date:{now:()=>now},setTimeout:f=>timers.push(f),fetch:async(url,options)=>{calls.push(['api',url,options]);return {ok:true,json:async()=>({resumed:data.allowResume!==false})};},chrome:{storage:{session:{get:async()=>structuredClone(data),set:async v=>Object.assign(data,v),remove:async key=>delete data[key]}},tabs:{reload:async id=>calls.push(['reload',id]),update:async(id,arg)=>calls.push(['navigate',id,arg])},alarms:{create:()=>{},onAlarm:{addListener:()=>{}}},runtime:{getURL:path=>'chrome-extension://test/'+path,onMessage:{addListener:f=>handler=f}}}});
  vm.runInContext(fs.readFileSync(__dirname+'/worker.js','utf8'),context);
  return {sendPopup:m=>new Promise(resolve=>handler(m,{id:context.chrome.runtime.id},resolve)),send:m=>new Promise(resolve=>handler(m,{tab:{id:12},url:"https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx"},resolve)),data,calls,timers,context,time:v=>now=v,run:code=>vm.runInContext(code,context)};
 }
@@ -38,4 +38,20 @@ test('OCR grant binds only the active ASIC tab while idle',async()=>{
  f.data.running=false;assert.equal((await f.sendPopup({action:'use-ocr-tab'})).ok,true);assert.equal(f.data.tabId,77);
  f.context.chrome.tabs.query=async()=>[{id:88,url:'https://example.com/'}];
  assert.match((await f.sendPopup({action:'use-ocr-tab'})).error,/ASIC/);assert.equal(f.data.tabId,77);
+});
+
+test('only a completed generation clears query-host cookies, once',async()=>{
+ const f=fixture(), saved={}, removed=[];
+ f.context.chrome.storage.local={get:async()=>saved,set:async value=>Object.assign(saved,value)};
+ f.context.chrome.cookies={getAll:async()=>[
+   {domain:'connectonline.asic.gov.au',path:'/RegistrySearch',name:'session',storeId:'0'},
+   {domain:'.asic.gov.au',path:'/',name:'shared',storeId:'0'}
+ ],remove:async details=>{removed.push(details);return details}};
+ for(const state of ['running','paused','idle','stopped','error','done','done']){
+   await f.run('finishBatch('+JSON.stringify({state,generation:'batch1',message:'status'})+')');
+ }
+ assert.equal(removed.length,1);
+ assert.equal(removed[0].url,'https://connectonline.asic.gov.au/RegistrySearch');
+ await f.run("finishBatch({state:'done',generation:'batch2',message:'done'})");
+ assert.equal(removed.length,2);
 });

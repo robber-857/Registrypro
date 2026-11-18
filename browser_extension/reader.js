@@ -9,6 +9,14 @@ function challengeVisible(e){
  for(let p=e;p;p=p.parentElement){const style=getComputedStyle(p);if(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0)return false;}
  return true;
 }
+let identityContent='',identitySince=Date.now();
+function ocrIdentityMatches(text){
+ const label=task.kind==='business'?'Business name':'Name';
+ const match=text.match(new RegExp('(?:^|\\n)\\s*'+label+'\\s*:\\s*([^\\n]+)','i'));
+ if(match)return norm(match[1])===norm(selectedName||task.name)||(task.allowed_names||[]).includes(norm(match[1]));
+ const query=text.match(/results? found for\s+["“']([^"”']+)["”']/i);
+ return !!query&&[task.name,task.abn,task.acn].filter(Boolean).some(value=>norm(query[1])===norm(value));
+}
 let seenCancelled=[],ocrObservation=null,ocrKey='',ocrAttempts=0,ocrFailure='';
 async function inspectScreenshot(text){ocrKey=text;ocrAttempts++;const response=await chrome.runtime.sendMessage({action:'ocr-inspect',id:task.id});ocrObservation=response.ocr||null;ocrFailure=response.error||'';if(ocrFailure)await chrome.runtime.sendMessage({action:'diagnostic',id:task.id,reason:'截图识别失败：'+ocrFailure});}
 let recovering=false,lastContent='',changedAt=Date.now(),challengeSince=null,clearSince=null,technicalSince=null;
@@ -55,7 +63,8 @@ if(/currently experiencing technical difficulties|temporarily unavailable|servic
  return;
 }
 technicalSince=null;
-if(task.screenshot_first&&(/Search Results/.test(text)||text.includes(marker))&&ocrKey!==observedText&&ocrAttempts<3){if(Date.now()-started<2500)return;await inspectScreenshot(observedText);return;}
+if(observedText!==identityContent){identityContent=observedText;identitySince=Date.now();}
+if(task.screenshot_first&&ocrIdentityMatches(text)&&(/Search Results/.test(text)||text.includes(marker))&&ocrKey!==observedText&&ocrAttempts<3){if(Date.now()-identitySince<2500)return;await inspectScreenshot(observedText);return;}
 if(ocrKey===observedText&&ocrObservation?.page_type==='business_summary'&&ocrObservation.text)text=ocrObservation.text;
 if(text!==lastContent){lastContent=text;changedAt=Date.now();}
 if(!text.trim()&&Date.now()-started>12000){await recoverPage('ASIC 空白页');return;}

@@ -347,6 +347,14 @@ def accept(task,payload,checked_at=None):
     return '已自动确认并保存日期 '+value
 
 
+def count_ocr(task):
+    # Count server extraction calls, including failures and fallback screenshots.
+    # Persist on the task so reader navigation and worker restart cannot reset it.
+    with LOCK:
+        task['ocr_attempts']=task.get('ocr_attempts',0)+1
+        checkpoint()
+
+
 def inspect_screenshot(payload):
     with LOCK:
         task=next((t for t in STATE['tasks'] if t['id']==payload.get('id')),None)
@@ -355,7 +363,9 @@ def inspect_screenshot(payload):
     if url.scheme!='https' or url.hostname!='connectonline.asic.gov.au':raise ValueError('只能识别 ASIC 官方页')
     from ocr_fallback import extract
     folder=registration.PATH.parent/'asic_browser_evidence'
+    folder.mkdir(parents=True,exist_ok=True)
     identifier=task['id']+'-ocr-'+str(time.time_ns())
+    count_ocr(task)
     extracted=extract(payload.get('screenshot'),folder,identifier)
     (folder/(identifier+'.json')).write_text(json.dumps(extracted,ensure_ascii=False,indent=2),encoding='utf-8')
     return extracted
@@ -369,6 +379,7 @@ def result(payload):
     if payload.get('screenshot'):
         from ocr_fallback import extract
         image=payload.pop('screenshot')
+        count_ocr(task)
         try:
             ocr=extract(image,registration.PATH.parent/'asic_browser_evidence',task['id'])
             payload.update(text=ocr.pop('text'),ocr=ocr)
@@ -378,6 +389,7 @@ def result(payload):
                 payload.update(error='截图中匹配商号为 Cancelled；分页范围未核实，保留观察记录',candidates=matching)
                 registration.update_browser(task['key'],{'asic_observed_records':json.dumps(matching,ensure_ascii=False)})
         except ValueError as exc:payload['error']=str(exc)
+    payload['metrics']={**payload.get('metrics',{}),'reader_ocr_attempts':payload.get('metrics',{}).get('ocr_attempts',0),'ocr_attempts':task.get('ocr_attempts',0),'ocr_count_scope':'server extraction calls, not billable requests'}
     evidence={'task':task,'result':payload,'received_at':datetime.now(timezone.utc).isoformat()}
     if payload.get('error'):message='浏览器未完成：'+str(payload['error'])[:300]
     else:
@@ -416,6 +428,7 @@ def result(payload):
             if not any(t['abn']==task['abn'] and t['name']==alternative for t in STATE['tasks']):
                 follow={**task,'id':secrets.token_hex(12),'name':alternative,'alternatives':remaining,'state':'queued','url':'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/panelSearch.jspx?'+urlencode({'searchTab':'bnsearch','searchName':alternative,'searchType':'Bn'})}
                 follow.pop('started_at',None)
+                follow.pop('ocr_attempts',None)
                 STATE['tasks'].insert(STATE['tasks'].index(task)+1,follow)
         task['state']='done';STATE['results'].append({'name':task['row']['name'],'message':message,'seconds':round(time.time()-task.get('started_at',time.time()),2),'cached':False,'metrics':payload.get('metrics',{})})
     checkpoint();export_progress()

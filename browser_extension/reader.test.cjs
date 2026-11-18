@@ -110,3 +110,14 @@ test('full original name alias records cancellation despite shortened search que
  const r=await searchFixture([[{name:'SYNTHETIC CAFE STRATHFIELD',abn:'Not Available',status:'Cancelled'}]],'',['syntheticcafestrathfield']);
  assert.equal(r.clicked.length,0);assert.match(r.sent[0].error,/仅找到已注销/);
 });
+
+test('OCR waits for matching page identity and stable text after stale summary',async()=>{
+ let now=0,interval;const sent=[];
+ const main={innerText:'Business Name Summary\nBusiness name: OLD CAFE',querySelectorAll:()=>[]};
+ const context=vm.createContext({Date:{now:()=>now},setInterval:f=>interval=f,document:{body:main,querySelector:s=>s==='main,[role="main"]'?main:null,querySelectorAll:()=>[]},chrome:{runtime:{onMessage:{addListener:()=>{}},sendMessage:async m=>{if(m.action==='task')return {task:{id:'stable',name:'CURRENT CAFE',kind:'business',screenshot_first:true}};sent.push(m);return {ok:true};}}}});
+ vm.runInContext(fs.readFileSync(__dirname+'/reader.js','utf8'),context);await new Promise(r=>setImmediate(r));
+ now=3000;await interval();assert.equal(sent.length,0);
+ main.innerText='Business Name Summary\nBusiness name: CURRENT CAFE';now=3500;await interval();assert.equal(sent.length,0);
+ now=5500;await interval();assert.equal(sent.length,0);
+ now=6100;await interval();assert.equal(sent.length,1);assert.equal(sent[0].action,'ocr-inspect');
+});
