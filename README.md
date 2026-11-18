@@ -1,20 +1,38 @@
 # Registrypro
 
-按澳洲邮编整理公开商家候选名单的本地工具。中文界面、官网联系方式提取、CSV 导出，以及独立的官方 ABN Lookup / Bulk Extract 查询脚本。
+按澳洲邮编整理 Active ABN 主体和商号，在 Chrome 中核对 ASIC 商号续期日，导出 Excel 或 CSV。工作台运行在使用者自己的 Windows 电脑上。
 
-## 快速开始
+## 在新电脑上部署
 
-需要 Python 3.10 或更新版本，核心使用标准库；可选截图 OCR 需要安装额外依赖，见中文使用说明。
+准备 **Windows、Python 3.10 或以上版本、Git 和桌面版 Google Chrome**。下面的命令在 PowerShell 中执行。ABN 官方快照和基本网页查询使用 Python 标准库，无需 ABR GUID。可选 OCR 配置见 [OCR 说明](docs/OPENAI-OCR.md)。
+
+**1. 获取项目并确认 Python 可用**
 
 ```powershell
 git clone https://github.com/robber-857/Registrypro.git
 cd Registrypro
-python sydney_business_leads/web_app.py
+python --version
 ```
 
-Windows 也可以双击根目录 `start.cmd`。打开 http://127.0.0.1:8765 ，输入邮编、选择州和行业，再点击“开始自动整理”。查询结果可下载为 Excel 能打开的 CSV。
+**2. 初始化 ABN 官方数据**。要使用「ABN 官方公开数据」来源，在项目根目录执行下面的命令，等待两份官方压缩包下载并完成 SQLite 索引构建。下载和索引都写入 `output/abn_data/`。预留数 GB 空间，首次启动时间取决于网络和磁盘。更新官方快照时可重新执行同一条命令。仅使用地图来源时可跳过这一步。
 
-默认包含目录返回的同州邻区候选，并分别记录实际邮编。取消勾选邻区选项可严格按目标邮编筛选。数量上限为 1–100，结果受来源覆盖和访问限制影响。
+```powershell
+python sydney_business_leads/update_abn_data.py
+```
+
+**3. 启动工作台**。双击根目录的 `start.cmd`，或在 PowerShell 中运行：
+
+```powershell
+.\start.cmd
+```
+
+在准备运行插件的 Chrome 窗口打开工作台，看到「输入邮编，整理商家名单」即表示本机网页服务已启动。保持启动窗口打开。若端口 8765 已被占用，先核对占用程序；插件默认连接此端口。[打开本机工作台](http://127.0.0.1:8765/)
+
+**4. 在同一个 Chrome 配置中安装扩展**。地址栏打开 `chrome://extensions/`，开启「开发者模式」，点「加载已解压的扩展程序」，选择仓库里的 `browser_extension` 文件夹（其中包含 `manifest.json`）。确认扩展列表显示 **Registrypro ASIC Assistant**，可从拼图菜单将它固定到工具栏。
+
+**5. 运行第一批**。在主页选 **NSW、2134、ABN 官方公开数据、25 个主体**，点「开始自动整理」。名单生成后，展开「ASIC 浏览器插件」并复制配对码。在工具栏 R 插件粘贴配对码，选择「最近一次查询」，取消「等待系统连续邮编队列」，点「连接并开始」。队列完成后，从主页下载续期日 Excel。连续邮编、暂停恢复和结果字段的解释见[完整中文使用说明](使用说明.md)。
+
+**版本范围。** 此仓库当前插件为 2.4.0。主页提供查询表格与 Excel / CSV 下载；独立的 20 行分页结果页及批末 Cookie 清理属于本机 2.4.1 工作版，此次文档更新未发布对应代码。
 
 ## 功能
 
